@@ -194,3 +194,8 @@ final_papers/
 # HF
 cache/
 huggingface/
+
+# Local research artifacts (not code)
+seed_papers/
+research_wiki.jsonl
+slurm_logs/

@@ -8,7 +8,7 @@ import anthropic
 import backoff
 import openai
 
-MAX_NUM_TOKENS = 4096
+MAX_NUM_TOKENS = 32000
 
 AVAILABLE_LLMS = [
     "claude-3-5-sonnet-20240620",
@@ -30,6 +30,9 @@ AVAILABLE_LLMS = [
     "o1-mini-2024-09-12",
     "o3-mini",
     "o3-mini-2025-01-31",
+    # Sakana Fugu models (OpenAI-compatible gateway)
+    "fugu",
+    "fugu-ultra",
     # DeepSeek Models
     "deepseek-coder-v2-0724",
     "deepcoder-14b",
@@ -115,7 +118,7 @@ def get_batch_responses_from_llm(
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
-    elif "gpt" in model:
+    elif "gpt" in model or model.startswith("fugu"):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -226,7 +229,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
             n=1,
             stop=None,
         )
-    elif "gpt" in model:
+    elif "gpt" in model or model.startswith("fugu"):
         return client.chat.completions.create(
             model=model,
             messages=[
@@ -324,7 +327,7 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif "gpt" in model:
+    elif "gpt" in model or model.startswith("fugu"):
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = make_llm_call(
             client,
@@ -494,6 +497,12 @@ def create_client(model) -> tuple[Any, str]:
         return openai.OpenAI(
             api_key=os.environ.get("OLLAMA_API_KEY", ""),
             base_url="http://localhost:11434/v1",
+        ), model
+    elif model.startswith("fugu"):
+        print(f"Using Sakana Fugu API with model {model}.")
+        return openai.OpenAI(
+            api_key=os.environ["SAKANA_API_KEY"],
+            base_url="https://api.sakana.ai/v1",
         ), model
     elif "gpt" in model:
         print(f"Using OpenAI API with model {model}.")

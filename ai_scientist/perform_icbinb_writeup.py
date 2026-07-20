@@ -19,7 +19,8 @@ from ai_scientist.llm import (
 
 from ai_scientist.utils.token_tracker import track_token_usage
 
-from ai_scientist.tools.semantic_scholar import search_for_papers
+from ai_scientist.tools.paper_search import search_for_papers
+from ai_scientist.tools.knowledge_bank import get_paper_knowledge
 
 from ai_scientist.perform_vlm_review import (
     generate_vlm_img_review,
@@ -42,38 +43,31 @@ def remove_accents_and_clean(s):
     return ascii_str
 
 
-def compile_latex(cwd, pdf_file, timeout=30):
+def compile_latex(cwd, pdf_file, timeout=180):
     print("GENERATING LATEX")
 
-    commands = [
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-        ["bibtex", "template"],
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
-    ]
-
-    for command in commands:
-        try:
-            result = subprocess.run(
-                command,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout,
-            )
-            print("Standard Output:\n", result.stdout)
-            print("Standard Error:\n", result.stderr)
-        except subprocess.TimeoutExpired:
-            print(
-                f"EXCEPTION in compile_latex: LaTeX timed out after {timeout} seconds."
-            )
-            print(traceback.format_exc())
-        except subprocess.CalledProcessError:
-            print(
-                f"EXCEPTION in compile_latex: Error running command {' '.join(command)}"
-            )
-            print(traceback.format_exc())
+    # tectonic runs the equivalent of pdflatex+bibtex+however many extra passes
+    # are needed in a single invocation, and fetches any missing LaTeX packages
+    # on demand instead of requiring a full pre-built TeX Live installation.
+    try:
+        result = subprocess.run(
+            ["tectonic", "template.tex"],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+        print("Standard Output:\n", result.stdout)
+        print("Standard Error:\n", result.stderr)
+    except subprocess.TimeoutExpired:
+        print(
+            f"EXCEPTION in compile_latex: LaTeX timed out after {timeout} seconds."
+        )
+        print(traceback.format_exc())
+    except subprocess.CalledProcessError:
+        print("EXCEPTION in compile_latex: Error running tectonic")
+        print(traceback.format_exc())
 
     print("FINISHED GENERATING LATEX")
 
@@ -335,7 +329,7 @@ def get_reflection_page_info(reflection_pdf, page_limit):
 
 
 def get_citation_addition(
-    client, model, context, current_round, total_rounds, idea_text
+    client, model, context, current_round, total_rounds, idea_text, seed_context=None
 ):
     report, citations = context
     msg_history = []
@@ -355,12 +349,25 @@ Reasons to reference papers include:
 8. Suggesting Future Research: Reference studies related to proposed future research directions.
 
 Ensure sufficient cites will be collected for all of these categories, and no categories are missed.
-You will be given access to the Semantic Scholar API; only add citations that you have found using the API.
+You will be given access to Semantic Scholar, OpenAlex, and arXiv search; only add citations that you have found using these tools.
 Aim to discuss a broad range of relevant papers, not just the most popular ones.
 Make sure not to copy verbatim from prior literature to avoid plagiarism.
 You will have {total_rounds} rounds to add to the references but do not need to use them all.
 
 DO NOT ADD A CITATION THAT ALREADY EXISTS!"""
+
+    if seed_context:
+        # Curly braces in extracted PDF text would otherwise be misread as
+        # str.format() placeholders, so this is substituted in as an opaque
+        # value via {seed_context_section}, never concatenated into the template.
+        seed_context_section = (
+            "\n\nYou have already read the following closely related papers in full. "
+            "Use what you learned from them to decide what else is worth searching for "
+            "(related methods, datasets, baselines, follow-up work, or work they themselves "
+            "build on) rather than guessing blindly:\n```\n" + seed_context + "\n```"
+        )
+    else:
+        seed_context_section = ""
 
     citation_first_prompt_template = """Round {current_round}/{total_rounds}:
 
@@ -368,6 +375,7 @@ You planned and executed the following idea:
 ```markdown
 {Idea}
 ```
+{seed_context_section}
 
 You produced the following report:
 ```markdown
@@ -431,6 +439,7 @@ This JSON will be automatically parsed, so ensure the format is precise."""
                 Idea=idea_text,
                 report=report,
                 citations=citations,
+                seed_context_section=seed_context_section,
             ),
             client=client,
             model=model,
@@ -662,84 +671,95 @@ def load_idea_text(base_folder):
     return idea_text
 
 
-def load_exp_summaries(base_folder):
+def load_experiment_report_text(base_folder):
+    """Load the Research Agent's experiment_report.json (status/summary/
+    key_results/files_of_interest) as a JSON string for citation/writeup
+    prompts. Replaces the old BFTS-node-log-based load_exp_summaries /
+    filter_experiment_summaries, which assumed a Node.to_dict() shape that
+    doesn't exist in this pipeline anymore."""
+    path = osp.join(base_folder, "experiment_report.json")
+    if not osp.exists(path):
+        return "(no experiment report found)"
+    try:
+        with open(path, "r") as f:
+            report = json.load(f)
+    except json.JSONDecodeError:
+        return "(experiment_report.json is not valid JSON)"
+    return json.dumps(report, indent=2)
+
+
+def gather_seed_context(base_folder, idea_text, model, max_seed_papers=4):
     """
-    Load the experiment summaries from the base folder.
+    Extract the papers mentioned in the idea's Related Work section, search for and
+    download them, and read the full text (falling back to the abstract if the PDF
+    isn't fetchable), so citation search can be grounded in papers actually read
+    rather than guessed at from the idea text alone. Cached to disk to survive resumes.
     """
-    summary_files = [
-        ("logs/0-run/baseline_summary.json", "BASELINE_SUMMARY"),
-        ("logs/0-run/research_summary.json", "RESEARCH_SUMMARY"),
-        ("logs/0-run/ablation_summary.json", "ABLATION_SUMMARY"),
-    ]
-    loaded_summaries = {}
-    for fname, key in summary_files:
-        path = osp.join(base_folder, fname)
-        if osp.exists(path):
+    seed_cache_path = osp.join(base_folder, "seed_context.txt")
+    if osp.exists(seed_cache_path):
+        with open(seed_cache_path, "r") as f:
+            return f.read()
+
+    seed_context = ""
+    try:
+        client, client_model = create_client(model)
+        extract_prompt = f"""Here is a research idea, including its Related Work section:
+```markdown
+{idea_text}
+```
+
+List the specific prior papers named or clearly referenced in the Related Work section
+(e.g. by method/system name, dataset name, or description) that would be worth reading in
+full before searching for further related literature. Up to {max_seed_papers} papers, most
+important first.
+
+Respond in the following format:
+
+THOUGHT:
+<THOUGHT>
+
+RESPONSE:
+```json
+<JSON>
+```
+
+In <JSON>, respond with a single field "Papers": a list of search-friendly strings (e.g.
+"Chronos: Learning the Language of Time Series"), one per paper, most important first."""
+
+        text, _ = get_response_from_llm(
+            prompt=extract_prompt,
+            client=client,
+            model=client_model,
+            system_message="You are an AI researcher preparing to write a paper's related work section.",
+            print_debug=False,
+        )
+        json_output = extract_json_between_markers(text)
+        paper_queries = (json_output or {}).get("Papers", [])[:max_seed_papers]
+
+        seed_sections = []
+        for query in paper_queries:
             try:
-                with open(path, "r") as f:
-                    loaded_summaries[key] = json.load(f)
-            except json.JSONDecodeError:
-                print(
-                    f"Warning: {fname} is not valid JSON. Using empty data for {key}."
-                )
-                loaded_summaries[key] = {}
-        else:
-            loaded_summaries[key] = {}
-    return loaded_summaries
+                papers = search_for_papers(query, result_limit=1)
+            except Exception as e:
+                print(f"Seed paper search failed for {query!r}: {e}")
+                continue
+            if not papers:
+                continue
+            paper = papers[0]
+            # Checks the knowledge bank by title first; only fetches/summarizes
+            # (and caches) if this paper hasn't been read before in this idea_dir.
+            summary = get_paper_knowledge(base_folder, paper, model, idea_context=idea_text)
+            seed_sections.append(f"### {paper.get('title', query)}\n{summary}")
 
+        seed_context = "\n\n".join(seed_sections)
+    except Exception:
+        print("EXCEPTION in gather_seed_context:")
+        print(traceback.format_exc())
+        seed_context = ""
 
-def filter_experiment_summaries(exp_summaries, step_name):
-    if step_name == "citation_gathering":
-        node_keys_to_keep = {
-            "overall_plan",
-            "analysis",
-            "metric",
-            "vlm_feedback_summary",
-        }
-    elif step_name == "writeup":
-        node_keys_to_keep = {
-            "overall_plan",
-            "analysis",
-            "metric",
-            "code",
-            "plot_analyses",
-            "vlm_feedback_summary",
-        }
-    elif step_name == "plot_aggregation":
-        node_keys_to_keep = {
-            "overall_plan",
-            "analysis",
-            "plot_plan",
-            "plot_code",
-            "plot_analyses",
-            "vlm_feedback_summary",
-            "exp_results_npy_files",
-        }
-    else:
-        raise ValueError(f"Invalid step name: {step_name}")
-
-    filtered_summaries = {}
-    for stage_name in exp_summaries.keys():
-        if stage_name in {"BASELINE_SUMMARY", "RESEARCH_SUMMARY"}:
-            filtered_summaries[stage_name] = {}
-            for key in exp_summaries[stage_name].keys():
-                if key in {"best node"}:
-                    filtered_summaries[stage_name][key] = {}
-                    for node_key in exp_summaries[stage_name][key].keys():
-                        if node_key in node_keys_to_keep:
-                            filtered_summaries[stage_name][key][node_key] = (
-                                exp_summaries[stage_name][key][node_key]
-                            )
-        elif stage_name == "ABLATION_SUMMARY" and step_name == "plot_aggregation":
-            filtered_summaries[stage_name] = {}
-            for ablation_summary in exp_summaries[stage_name]:
-                filtered_summaries[stage_name][ablation_summary["ablation_name"]] = {}
-                for node_key in ablation_summary.keys():
-                    if node_key in node_keys_to_keep:
-                        filtered_summaries[stage_name][
-                            ablation_summary["ablation_name"]
-                        ][node_key] = ablation_summary[node_key]
-    return filtered_summaries
+    with open(seed_cache_path, "w") as f:
+        f.write(seed_context)
+    return seed_context
 
 
 def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-05-13"):
@@ -781,11 +801,11 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
     try:
         # Load idea text and summaries
         idea_text = load_idea_text(base_folder)
-        exp_summaries = load_exp_summaries(base_folder)
-        filtered_summaries = filter_experiment_summaries(
-            exp_summaries, step_name="citation_gathering"
-        )
-        filtered_summaries_str = json.dumps(filtered_summaries, indent=2)
+        filtered_summaries_str = load_experiment_report_text(base_folder)
+
+        # Read the papers referenced in Related Work before searching for more,
+        # so query generation is grounded in papers actually read, not guessed at.
+        seed_context = gather_seed_context(base_folder, idea_text, small_model)
 
         # Run small model for citation additions
         client, client_model = create_client(small_model)
@@ -800,6 +820,7 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
                     round_idx,
                     num_cite_rounds,
                     idea_text,
+                    seed_context,
                 )
 
                 if done:
@@ -880,12 +901,7 @@ def perform_writeup(
 
     try:
         idea_text = load_idea_text(base_folder)
-        exp_summaries = load_exp_summaries(base_folder)
-        filtered_summaries_for_writeup = filter_experiment_summaries(
-            exp_summaries, step_name="writeup"
-        )
-        # Convert them to one big JSON string for context
-        combined_summaries_str = json.dumps(filtered_summaries_for_writeup, indent=2)
+        combined_summaries_str = load_experiment_report_text(base_folder)
 
         # Prepare a new fresh latex folder
         if not osp.exists(osp.join(latex_folder, "template.tex")):

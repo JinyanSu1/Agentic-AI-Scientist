@@ -1,0 +1,154 @@
+"""Shared openai-agents (Agent/Runner/handoff) setup for fugu, plus tools wrapping
+our search + knowledge-bank utilities so agents can search/read papers as genuine
+tool calls (the agent decides when to read something, not a Python pre-fetch step).
+
+Call configure_fugu_as_default() once per process before constructing any Agent.
+"""
+
+import os
+import os.path as osp
+import time
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from agents import (
+    AsyncOpenAI,
+    RunContextWrapper,
+    Runner,
+    function_tool,
+    set_default_openai_api,
+    set_default_openai_client,
+    set_tracing_disabled,
+)
+
+from ai_scientist.tools.knowledge_bank import get_paper_knowledge
+from ai_scientist.tools.paper_search import search_for_papers
+from ai_scientist.tools.codex_worker import (
+    describe_plot,
+    list_workdir_files,
+    read_text_file,
+    run_codex_task,
+)
+
+
+def configure_fugu_as_default(model: str = "fugu") -> None:
+    client = AsyncOpenAI(
+        api_key=os.environ["SAKANA_API_KEY"],
+        base_url="https://api.sakana.ai/v1",
+    )
+    # Tracing defaults to uploading run traces to OpenAI's platform using
+    # OPENAI_API_KEY, which we don't have a valid one for and don't want anyway
+    # since we're not running against OpenAI's actual models.
+    set_default_openai_client(client, use_for_tracing=False)
+    set_tracing_disabled(True)
+    set_default_openai_api("chat_completions")
+
+
+def run_agent_with_retry(
+    agent: Any,
+    input_data: Any,
+    context: Optional[Any] = None,
+    max_turns: int = 20,
+    retries: int = 3,
+) -> Any:
+    """Runner.run_sync, but a single garbled/corrupted model response (a real,
+    observed failure mode -- e.g. an occasional token-level glitch that breaks
+    structured-output JSON parsing) raises agents.exceptions.ModelBehaviorError
+    and would otherwise kill an entire multi-hour pipeline run. Retry a few
+    times before giving up for real."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            if context is not None:
+                return Runner.run_sync(agent, input_data, context=context, max_turns=max_turns)
+            return Runner.run_sync(agent, input_data, max_turns=max_turns)
+        except Exception as e:
+            last_exc = e
+            print(
+                f"Agent run failed (attempt {attempt + 1}/{retries + 1}) for "
+                f"agent {getattr(agent, 'name', '?')}: {e}"
+            )
+            if attempt < retries:
+                time.sleep(min(2 ** attempt, 30))
+    raise last_exc
+
+
+@dataclass
+class ResearchContext:
+    """Passed as Runner.run(..., context=...) so tools know where to cache
+    knowledge-bank entries and what model to use for paper summarization."""
+
+    workdir: str
+    model: str = "fugu"
+
+
+@function_tool
+def search_literature(query: str) -> str:
+    """Search Semantic Scholar, OpenAlex, and arXiv (merged and deduplicated) for
+    papers matching a query. Returns title/authors/venue/year/abstract for each."""
+    papers = search_for_papers(query, result_limit=5)
+    if not papers:
+        return "No papers found."
+    return "\n\n".join(
+        f"{p.get('title', 'Unknown Title')}. {p.get('authors', 'Unknown')}. "
+        f"{p.get('venue', 'Unknown Venue')}, {p.get('year', 'Unknown Year')}.\n"
+        f"Abstract: {p.get('abstract', 'No abstract available.')}"
+        for p in papers
+    )
+
+
+def _read_paper_in_depth_impl(workdir: str, model: str, query_or_path: str, why: str) -> str:
+    if osp.isfile(query_or_path) and query_or_path.lower().endswith(".pdf"):
+        title = osp.splitext(osp.basename(query_or_path))[0].replace("_", " ").replace("-", " ")
+        paper = {"title": title, "abstract": "", "pdf_url": osp.abspath(query_or_path)}
+    else:
+        papers = search_for_papers(query_or_path, result_limit=1)
+        if not papers:
+            return f"No paper found for {query_or_path!r}."
+        paper = papers[0]
+    return get_paper_knowledge(workdir, paper, model, idea_context=why)
+
+
+@function_tool
+def read_paper_in_depth(
+    ctx: RunContextWrapper[ResearchContext], query_or_path: str, why: str
+) -> str:
+    """Read a paper in full (from a local PDF path or by searching for it by
+    title/topic) and return a summary of what's useful for the given reason
+    ('why' -- what you're trying to figure out, e.g. your current research
+    direction or hypothesis). Cached by title, so reading the same paper again
+    (from any query that resolves to it) is instant and doesn't re-download it."""
+    return _read_paper_in_depth_impl(ctx.context.workdir, ctx.context.model, query_or_path, why)
+
+
+@function_tool
+def run_experiment_task(ctx: RunContextWrapper[ResearchContext], task: str) -> str:
+    """Give Codex a concrete coding/experiment task to carry out (write code,
+    run it, fix errors, report results) in your working directory. Codex can
+    read/write any file there and run shell commands. Be specific: what to
+    implement, what data/model to use, what to measure, what file(s) to save
+    results/plots to. Codex has no memory of previous calls -- restate any
+    context it needs (e.g. what to fix if the last attempt failed)."""
+    return run_codex_task(task, ctx.context.workdir)
+
+
+@function_tool
+def list_experiment_files(ctx: RunContextWrapper[ResearchContext]) -> str:
+    """List all files Codex has produced so far in your working directory
+    (results, plots, logs), so you know what's available to inspect."""
+    return list_workdir_files(ctx.context.workdir)
+
+
+@function_tool
+def read_experiment_file(ctx: RunContextWrapper[ResearchContext], relative_path: str) -> str:
+    """Read a text file (results.json, a log, etc.) from your working
+    directory, given a path relative to it."""
+    return read_text_file(osp.join(ctx.context.workdir, relative_path))
+
+
+@function_tool
+def inspect_plot(ctx: RunContextWrapper[ResearchContext], relative_path: str, question: str) -> str:
+    """Ask a question about a plot/figure image Codex produced (e.g. 'does the
+    training loss converge?', 'is there anything wrong with this figure?').
+    relative_path is relative to your working directory."""
+    return describe_plot(osp.join(ctx.context.workdir, relative_path), question, model=ctx.context.model)

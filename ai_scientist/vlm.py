@@ -8,7 +8,7 @@ import os
 from PIL import Image
 from ai_scientist.utils.token_tracker import track_token_usage
 
-MAX_NUM_TOKENS = 4096
+MAX_NUM_TOKENS = 32000
 
 AVAILABLE_VLMS = [
     "gpt-4o-2024-05-13",
@@ -16,6 +16,10 @@ AVAILABLE_VLMS = [
     "gpt-4o-2024-11-20",
     "gpt-4o-mini-2024-07-18",
     "o3-mini",
+
+    # Sakana Fugu models (OpenAI-compatible gateway)
+    "fugu",
+    "fugu-ultra",
 
     # Ollama models
 
@@ -64,7 +68,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
             stop=None,
             seed=0,
         )
-    elif "gpt" in model:
+    elif "gpt" in model or model.startswith("fugu"):
         return client.chat.completions.create(
             model=model,
             messages=[
@@ -104,7 +108,7 @@ def make_vlm_call(client, model, temperature, system_message, prompt):
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
         )
-    elif "gpt" in model:
+    elif "gpt" in model or model.startswith("fugu"):
         return client.chat.completions.create(
             model=model,
             messages=[
@@ -208,6 +212,12 @@ def create_client(model: str) -> tuple[Any, str]:
         return openai.OpenAI(
             api_key=os.environ.get("OLLAMA_API_KEY", ""),
             base_url="http://localhost:11434/v1"
+        ), model
+    elif model.startswith("fugu"):
+        print(f"Using Sakana Fugu API with model {model}.")
+        return openai.OpenAI(
+            api_key=os.environ["SAKANA_API_KEY"],
+            base_url="https://api.sakana.ai/v1",
         ), model
     else:
         raise ValueError(f"Model {model} not supported.")

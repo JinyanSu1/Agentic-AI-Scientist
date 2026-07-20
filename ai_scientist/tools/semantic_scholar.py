@@ -99,7 +99,7 @@ Abstract: {paper.get("abstract", "No abstract available.")}"""
 
 
 @backoff.on_exception(
-    backoff.expo, requests.exceptions.HTTPError, on_backoff=on_backoff
+    backoff.expo, requests.exceptions.HTTPError, on_backoff=on_backoff, max_time=120
 )
 def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
     S2_API_KEY = os.getenv("S2_API_KEY")
@@ -120,7 +120,7 @@ def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
         params={
             "query": query,
             "limit": result_limit,
-            "fields": "title,authors,venue,year,abstract,citationStyles,citationCount",
+            "fields": "title,authors,venue,year,abstract,citationStyles,citationCount,openAccessPdf,externalIds",
         },
     )
     print(f"Response Status Code: {rsp.status_code}")
@@ -135,4 +135,11 @@ def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
         return None
 
     papers = results["data"]
+    for paper in papers:
+        oa_pdf = paper.get("openAccessPdf") or {}
+        paper["pdf_url"] = oa_pdf.get("url")
+        if not paper["pdf_url"]:
+            arxiv_id = (paper.get("externalIds") or {}).get("ArXiv")
+            if arxiv_id:
+                paper["pdf_url"] = f"https://arxiv.org/pdf/{arxiv_id}"
     return papers

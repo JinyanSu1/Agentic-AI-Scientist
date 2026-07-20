@@ -96,7 +96,7 @@ export S2_API_KEY="YOUR_S2_KEY_HERE"
 
 ## Generate Research Ideas
 
-Before running the full AI Scientist-v2 experiment pipeline, you first use the `ai_scientist/perform_ideation_temp_free.py` script to generate potential research ideas. This script uses an LLM to brainstorm and refine ideas based on a high-level topic description you provide, interacting with tools like Semantic Scholar to check for novelty.
+Before running the full AI Scientist-v2 experiment pipeline, you first use the `ai_scientist/perform_ideation_temp_free.py` script to generate potential research ideas. Each idea is produced by a **debate** between three LLM roles: a proposer drafts and revises the idea, a challenger critiques it on novelty, feasibility, resource requirements, and likely failure modes (using Semantic Scholar to ground novelty concerns), and an evaluator judges after every round whether the idea is ready to lock in or needs another round of revision.
 
 1.  **Prepare a Topic Description:** Create a Markdown file (e.g., `my_research_topic.md`) describing the research area or theme you want the AI to explore. This file should contain sections like `Title`, `Keywords`, `TL;DR`, and `Abstract` to define the scope of the research. Refer to the example file `ai_scientist/ideas/i_cant_believe_its_not_better.md` for the expected structure and content format. Place your file in a location accessible by the script (e.g., the `ai_scientist/ideas/` directory).
 
@@ -107,14 +107,15 @@ Before running the full AI Scientist-v2 experiment pipeline, you first use the `
      --workshop-file "ai_scientist/ideas/my_research_topic.md" \
      --model gpt-4o-2024-05-13 \
      --max-num-generations 20 \
-     --num-reflections 5
+     --max-debate-rounds 12
     ```
     *   `--workshop-file`: Path to your topic description Markdown file.
-    *   `--model`: The LLM to use for generating ideas (ensure you have the corresponding API key set).
-    *   `--max-num-generations`: How many distinct research ideas to attempt generating.
-    *   `--num-reflections`: How many refinement steps the LLM should perform for each idea.
+    *   `--model`: The LLM used for all three debate roles (proposer, challenger, evaluator; ensure you have the corresponding API key set).
+    *   `--max-num-generations`: How many distinct research ideas (independent debates) to attempt generating.
+    *   `--max-debate-rounds`: Safety cap on rounds per idea; the evaluator can lock the idea in earlier. If the cap is hit before the evaluator is satisfied, the idea is kept but marked `"_debate": {"flagged": true, ...}` rather than silently discarded or force-accepted — check `last_unresolved_issues` on flagged ideas before using them.
+    *   `--compaction-token-threshold` (default 6000): once a debate role's running context exceeds this many tokens, older rounds are condensed into a short note (written to the idea's debate transcript directory under `experiments/idea_debates/`) so long debates don't blow the context window; the raw per-round record is always kept on disk and can be recalled on demand via the `LookupDebateRound` tool.
 
-3.  **Output:** The script will generate a JSON file named after your input Markdown file (e.g., `ai_scientist/ideas/my_research_topic.json`). This file will contain a list of structured research ideas, including hypotheses, proposed experiments, and related work analysis.
+3.  **Output:** The script will generate a JSON file named after your input Markdown file (e.g., `ai_scientist/ideas/my_research_topic.json`). This file will contain a list of structured research ideas, including hypotheses, proposed experiments, related work analysis, and a `_debate` block recording how many rounds it took and whether it was cleanly locked or flagged.
 
 4.  **Proceed to Experiments:** Once you have the generated JSON file containing research ideas, you can proceed to the next section to run the experiments.
 

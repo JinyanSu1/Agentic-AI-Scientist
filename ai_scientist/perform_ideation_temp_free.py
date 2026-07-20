@@ -1,264 +1,390 @@
+"""Generates research ideas via a genuine multi-agent debate: a Proposer drafts
+(reading seed papers and searching literature as real tool calls, not a Python
+pre-fetch step), a Challenger critiques it, and an Evaluator decides whether to
+lock the idea in or send it back for another revision round. Built on the
+openai-agents SDK (Agent/Runner/handoff/structured outputs) rather than a
+hand-rolled ACTION/ARGUMENTS text parser, so tool-calling, multi-turn handling,
+and structured output are all the framework's job, not ours.
+"""
+
 import argparse
 import json
+import os
 import os.path as osp
-import re
+import time
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-import sys
+import tiktoken
+from agents import Agent, handoff
+from pydantic import BaseModel
 
-sys.path.append(osp.join(osp.dirname(__file__), ".."))
-from ai_scientist.llm import (
-    AVAILABLE_LLMS,
-    create_client,
-    get_response_from_llm,
+from ai_scientist.agents_common import (
+    ResearchContext,
+    configure_fugu_as_default,
+    read_paper_in_depth,
+    run_agent_with_retry,
+    search_literature,
 )
 
-from ai_scientist.tools.semantic_scholar import SemanticScholarSearchTool
-from ai_scientist.tools.base_tool import BaseTool
+_TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
 
-# Create tool instances
-semantic_scholar_tool = SemanticScholarSearchTool()
 
-# Define tools at the top of the file
-tools = [
-    semantic_scholar_tool,
-    {
-        "name": "FinalizeIdea",
-        "description": """Finalize your idea by providing the idea details.
+def count_tokens(text: str) -> int:
+    return len(_TOKEN_ENCODING.encode(text))
 
-The IDEA JSON should include the following fields:
-- "Name": A short descriptor of the idea. Lowercase, no spaces, underscores allowed.
-- "Title": A catchy and informative title for the proposal.
-- "Short Hypothesis": A concise statement of the main hypothesis or research question. Clarify the need for this specific direction, ensure this is the best setting to investigate this idea, and there are not obvious other simpler ways to answer the question.
-- "Related Work": A brief discussion of the most relevant related work and how the proposal clearly distinguishes from it, and is not a trivial extension.
-- "Abstract": An abstract that summarizes the proposal in conference format (approximately 250 words).
-- "Experiments": A list of experiments that would be conducted to validate the proposal. Ensure these are simple and feasible. Be specific in exactly how you would test the hypothesis, and detail precise algorithmic changes. Include the evaluation metrics you would use.
-- "Risk Factors and Limitations": A list of potential risks and limitations of the proposal.""",
-    },
-]
 
-# Create a tools dictionary for easy lookup
-tools_dict = {tool.name: tool for tool in tools if isinstance(tool, BaseTool)}
+# --- Structured idea/critique/verdict shapes -------------------------------
 
-# Create a string with the tool descriptions
-tool_descriptions = "\n\n".join(
-    (
-        f"- **{tool.name}**: {tool.description}"
-        if isinstance(tool, BaseTool)
-        else f"- **{tool['name']}**: {tool['description']}"
+
+class ExperimentPlan(BaseModel):
+    datasets: List[str]
+    baselines: List[str]
+    metrics: List[str]
+    compute_estimate: str
+    steps: List[str]
+
+
+class IdeaDraft(BaseModel):
+    name: str
+    title: str
+    short_hypothesis: str
+    related_work: str
+    abstract: str
+    experiments: ExperimentPlan
+    risk_factors_and_limitations: List[str]
+
+
+class Assessment(BaseModel):
+    assessment: str
+    severity: str  # "low", "medium", or "high"
+
+
+class Critique(BaseModel):
+    novelty: Assessment
+    feasibility: Assessment
+    resource_requirements: Assessment
+    failure_modes: Assessment
+
+
+class Verdict(BaseModel):
+    decision: str  # "lock" or "continue"
+    unresolved_issues: List[str]
+    reasoning: str
+
+
+def idea_draft_to_dict(draft: IdeaDraft) -> Dict[str, Any]:
+    """Convert to the plain-dict shape the rest of the codebase (idea_to_markdown,
+    agent_manager.py, perform_icbinb_writeup.py) expects."""
+    return {
+        "Name": draft.name,
+        "Title": draft.title,
+        "Short Hypothesis": draft.short_hypothesis,
+        "Related Work": draft.related_work,
+        "Abstract": draft.abstract,
+        "Experiments": {
+            "datasets": draft.experiments.datasets,
+            "baselines": draft.experiments.baselines,
+            "metrics": draft.experiments.metrics,
+            "compute_estimate": draft.experiments.compute_estimate,
+            "steps": draft.experiments.steps,
+        },
+        "Risk Factors and Limitations": draft.risk_factors_and_limitations,
+    }
+
+
+# --- Agent instructions ------------------------------------------------------
+
+NO_WORKSHOP_TOPIC_FRAMING = (
+    "There is no fixed workshop topic to fit. Propose a novel, high-impact "
+    "research idea in the general area of the seed papers below -- let the "
+    "papers themselves define the space to work in, rather than fitting any "
+    "external theme."
+)
+
+PROPOSER_INSTRUCTIONS_TEMPLATE = """You are an experienced AI researcher who proposes high-impact research ideas resembling exciting grant proposals. Be creative and think out of the box. Each proposal should stem from a simple and elegant question, observation, or hypothesis. Clearly clarify how the proposal distinguishes from existing literature.
+
+Ensure the proposal does not require resources beyond what an academic lab could afford. It should lead to a paper publishable at a top ML conference.
+
+{topic_framing}
+{seed_papers_section}
+Before proposing, use the read_paper_in_depth tool to read the seed papers above (pass the reason you're reading each one as `why`), and use search_literature for anything else you need to check. Do not propose cold without reading them first.
+
+Your idea's "Experiments" section must be a genuinely detailed, executable plan -- specific dataset names, specific baselines, specific metrics, a compute estimate, and an ordered list of concrete steps. Not prose, and not vague ("implement the method and evaluate it" is not acceptable).
+
+Once you have a solid idea (or, on a revision round, once you've addressed the feedback below), hand it off to the Challenger with the full idea draft.
+{revision_context}"""
+
+CHALLENGER_INSTRUCTIONS = """You are a skeptical, rigorous reviewer whose job is to find real problems with a proposed AI research idea before it wastes compute and time. You are not trying to be agreeable -- you are trying to prevent a weak idea from being executed. Be specific and concrete; vague objections are not useful.
+
+You will receive an idea draft via handoff. Critique it on exactly these four dimensions, each with a severity (low/medium/high):
+- novelty: Is this meaningfully different from existing work, or a trivial extension? Use search_literature if you need to check.
+- feasibility: Can this actually be executed as described, with the methods/data available?
+- resource_requirements: What compute/data/time would this realistically take, and is that affordable for an academic lab?
+- failure_modes: What is most likely to go wrong when this is actually run?
+
+Once your critique is ready, hand off to the Evaluator with the full critique."""
+
+EVALUATOR_INSTRUCTIONS = """You are an objective judge overseeing a debate between a Proposer and a Challenger about an AI research idea. You do not propose or critique the idea yourself -- you evaluate whether the proposer's idea (visible above, from the handoff history) has, in light of the Challenger's critique (also visible above), substantively addressed the real concerns, or whether serious unresolved issues remain.
+
+Decide "lock" only when the challenger's most serious concerns are genuinely addressed (not just acknowledged) by the idea as drafted. Decide "continue" if concrete, unresolved issues remain -- list them specifically in unresolved_issues so the proposer knows exactly what to fix next round. Be decisive -- do not send it back over issues that are already adequately handled.
+
+Always end by producing your verdict."""
+
+
+def _build_agents(topic_framing: str, seed_papers_section: str, revision_context: str):
+    # Handoffs pass the full conversation history forward by default, so a
+    # later agent in the chain can see earlier tool calls (e.g. the Proposer
+    # reading a seed paper) and try to call the same tool itself. Every agent
+    # in the chain gets the same tool set so that never raises a
+    # ModelBehaviorError for an undefined tool.
+    common_tools = [read_paper_in_depth, search_literature]
+
+    evaluator = Agent(
+        name="Evaluator",
+        instructions=EVALUATOR_INSTRUCTIONS,
+        model="fugu",
+        tools=common_tools,
+        output_type=Verdict,
     )
-    for tool in tools
-)
+    challenger = Agent(
+        name="Challenger",
+        instructions=CHALLENGER_INSTRUCTIONS,
+        model="fugu",
+        tools=common_tools,
+    )
+    proposer = Agent(
+        name="Proposer",
+        instructions=PROPOSER_INSTRUCTIONS_TEMPLATE.format(
+            topic_framing=topic_framing,
+            seed_papers_section=seed_papers_section,
+            revision_context=revision_context,
+        ),
+        model="fugu",
+        tools=common_tools,
+    )
 
-# Extract tool names for the prompt
-tool_names = [
-    f'"{tool.name}"' if isinstance(tool, BaseTool) else f'"{tool["name"]}"'
-    for tool in tools
-]
-tool_names_str = ", ".join(tool_names)
+    draft_box: Dict[str, IdeaDraft] = {}
+    critique_box: Dict[str, Critique] = {}
 
-system_prompt = f"""You are an experienced AI researcher who aims to propose high-impact research ideas resembling exciting grant proposals. Feel free to propose any novel ideas or experiments; make sure they are novel. Be very creative and think out of the box. Each proposal should stem from a simple and elegant question, observation, or hypothesis about the topic. For example, they could involve very interesting and simple interventions or investigations that explore new possibilities or challenge existing assumptions. Clearly clarify how the proposal distinguishes from the existing literature.
+    def capture_draft(_ctx, input_data: IdeaDraft) -> None:
+        draft_box["value"] = input_data
 
-Ensure that the proposal does not require resources beyond what an academic lab could afford. These proposals should lead to papers that are publishable at top ML conferences.
+    def capture_critique(_ctx, input_data: Critique) -> None:
+        critique_box["value"] = input_data
 
-You have access to the following tools:
+    challenger.handoffs = [
+        handoff(evaluator, input_type=Critique, on_handoff=capture_critique)
+    ]
+    proposer.handoffs = [
+        handoff(challenger, input_type=IdeaDraft, on_handoff=capture_draft)
+    ]
 
-{tool_descriptions}
+    return proposer, draft_box, critique_box
 
-Respond in the following format:
 
-ACTION:
-<The action to take, exactly one of {tool_names_str}>
+def run_debate_round(
+    topic_framing: str,
+    seed_papers_section: str,
+    revision_context: str,
+    research_ctx: ResearchContext,
+    max_turns: int = 20,
+) -> tuple[Optional[IdeaDraft], Optional[Critique], Verdict]:
+    proposer, draft_box, critique_box = _build_agents(
+        topic_framing, seed_papers_section, revision_context
+    )
+    result = run_agent_with_retry(
+        proposer,
+        "Begin." if not revision_context else "Revise your idea per the feedback above.",
+        context=research_ctx,
+        max_turns=max_turns,
+    )
+    verdict = result.final_output
+    if not isinstance(verdict, Verdict):
+        raise RuntimeError(
+            f"Debate round did not end with the Evaluator's Verdict (got {type(verdict)}); "
+            "the chain likely didn't reach a handoff/final answer within max_turns."
+        )
+    return draft_box.get("value"), critique_box.get("value"), verdict
 
-ARGUMENTS:
-<If ACTION is "SearchSemanticScholar", provide the search query as {{"query": "your search query"}}. If ACTION is "FinalizeIdea", provide the idea details as {{"idea": {{ ... }}}} with the IDEA JSON specified below.>
 
-If you choose to finalize your idea, provide the IDEA JSON in the arguments:
+def _persist_round(
+    transcript_dir: str,
+    round_idx: int,
+    draft: Optional[IdeaDraft],
+    critique: Optional[Critique],
+    verdict: Verdict,
+) -> None:
+    payload = {
+        "round": round_idx,
+        "draft": draft.model_dump() if draft else None,
+        "critique": critique.model_dump() if critique else None,
+        "verdict": verdict.model_dump(),
+    }
+    with open(osp.join(transcript_dir, f"round_{round_idx:02d}.json"), "w") as f:
+        json.dump(payload, f, indent=2)
 
-IDEA JSON:
-```json
-{{
-  "idea": {{
-    "Name": "...",
-    "Title": "...",
-    "Short Hypothesis": "...",
-    "Related Work": "...",
-    "Abstract": "...",
-    "Experiments": "...",
-    "Risk Factors and Limitations": "..."
-  }}
-}}
-```
 
-Ensure the JSON is properly formatted for automatic parsing.
+def run_debate_for_idea(
+    workshop_description: str,
+    seed_papers: Optional[List[str]],
+    prev_ideas_string: str,
+    max_debate_rounds: int,
+    transcript_dir: str,
+    model: str = "fugu",
+) -> Dict[str, Any]:
+    os.makedirs(transcript_dir, exist_ok=True)
+    research_ctx = ResearchContext(workdir=transcript_dir, model=model)
 
-Note: You should perform at least one literature search before finalizing your idea to ensure it is well-informed by existing research."""
+    topic_framing = workshop_description.strip() or NO_WORKSHOP_TOPIC_FRAMING
+    if prev_ideas_string.strip():
+        topic_framing += (
+            "\n\nProposals you have already generated in previous debates (propose "
+            f"something that differs from these):\n'''\n{prev_ideas_string}\n'''"
+        )
 
-# Define the initial idea generation prompt
-idea_generation_prompt = """{workshop_description}
+    seed_papers_section = ""
+    if seed_papers:
+        seed_papers_section = (
+            "\nSeed papers to read before proposing (local paths or search "
+            f"queries): {seed_papers}\n"
+        )
 
-Here are the proposals that you have already generated:
+    revision_context = ""
+    last_draft: Optional[IdeaDraft] = None
+    last_verdict: Optional[Verdict] = None
+    locked = False
+    round_idx = 0
+    for round_idx in range(max_debate_rounds):
+        draft, critique, verdict = run_debate_round(
+            topic_framing, seed_papers_section, revision_context, research_ctx
+        )
+        _persist_round(transcript_dir, round_idx, draft, critique, verdict)
+        if draft is not None:
+            last_draft = draft
+        last_verdict = verdict
 
-'''
-{prev_ideas_string}
-'''
+        print(
+            f"Round {round_idx}: decision={verdict.decision} reasoning={verdict.reasoning[:200]}"
+        )
 
-Begin by generating an interestingly new high-level research proposal that differs from what you have previously proposed.
-"""
+        if verdict.decision == "lock":
+            locked = True
+            break
 
-# Define the reflection prompt
-idea_reflection_prompt = """Round {current_round}/{num_reflections}.
+        revision_context = (
+            "\nFEEDBACK FROM PREVIOUS ROUND -- address this directly:\n"
+            f"Your previous draft: {draft.model_dump() if draft else '(none captured)'}\n"
+            f"Challenger's critique: {critique.model_dump() if critique else '(none captured)'}\n"
+            f"Evaluator's reasoning for sending it back: {verdict.reasoning}\n"
+            f"Unresolved issues to fix: {verdict.unresolved_issues}\n"
+        )
 
-In your thoughts, first carefully consider the quality, novelty, and feasibility of the proposal you just created.
-Include any other factors that you think are important in evaluating the proposal.
-Ensure the proposal is clear and concise, and the JSON is in the correct format.
-Do not make things overly complicated.
-In the next attempt, try to refine and improve your proposal.
-Stick to the spirit of the original idea unless there are glaring issues.
+    if last_draft is None:
+        raise RuntimeError(
+            f"Debate in {transcript_dir} never produced a captured idea draft "
+            "(the Proposer->Challenger handoff may not have fired)."
+        )
 
-If you have new information from tools, such as literature search results, incorporate them into your reflection and refine your proposal accordingly.
+    final_idea = idea_draft_to_dict(last_draft)
+    final_idea["_debate"] = {
+        "rounds": round_idx + 1,
+        "locked": locked,
+        "flagged": not locked,
+        "transcript_dir": transcript_dir,
+    }
+    if not locked and last_verdict is not None:
+        final_idea["_debate"]["last_unresolved_issues"] = last_verdict.unresolved_issues
+    return final_idea
 
-Results from your last action (if any):
 
-{last_tool_results}
-"""
+def derive_seed_queries_from_workshop(
+    model: str, workshop_description: str, max_queries: int = 2
+) -> List[str]:
+    """When no explicit --seed-papers are given, derive a couple of literature
+    search queries from the workshop topic itself, so ideation still starts from
+    having surveyed the sub-field instead of proposing cold."""
+
+    class SurveyQueries(BaseModel):
+        queries: List[str]
+
+    try:
+        agent = Agent(
+            name="SurveyPlanner",
+            instructions=(
+                "You are an AI researcher about to propose ideas for a workshop "
+                "topic. Before proposing anything, propose up to "
+                f"{max_queries} literature search queries that would surface the "
+                "most important/representative recent papers for this topic, so "
+                "they can be read in full before proposing an idea. Prefer "
+                "queries likely to surface well-known, influential papers over "
+                "obscure ones."
+            ),
+            model=model,
+            output_type=SurveyQueries,
+        )
+        result = run_agent_with_retry(
+            agent, f"Workshop topic:\n{workshop_description}", max_turns=3
+        )
+        return result.final_output.queries[:max_queries]
+    except Exception as e:
+        print(f"Failed to derive survey queries from workshop description: {e}")
+        return []
 
 
 def generate_temp_free_idea(
     idea_fname: str,
-    client: Any,
-    model: str,
     workshop_description: str,
-    max_num_generations: int = 20,
-    num_reflections: int = 5,
+    max_num_generations: int = 1,
+    max_debate_rounds: int = 12,
     reload_ideas: bool = True,
+    seed_papers: Optional[List[str]] = None,
+    model: str = "fugu",
 ) -> List[Dict]:
-    idea_str_archive = []
-    # load ideas from file
+    configure_fugu_as_default(model)
+
+    ideas: List[Dict[str, Any]] = []
     if reload_ideas and osp.exists(idea_fname):
         with open(idea_fname, "r") as f:
-            idea_str_content = json.load(f)
-            for idea in idea_str_content:
-                idea_str_archive.append(json.dumps(idea))
-            print(f"Loaded {len(idea_str_archive)} ideas from {idea_fname}")
+            ideas = json.load(f)
+        print(f"Loaded {len(ideas)} ideas from {idea_fname}")
     else:
         print(f"No ideas found in {idea_fname}. Starting from scratch.")
 
+    debates_root = osp.join(
+        "experiments", "idea_debates", osp.splitext(osp.basename(idea_fname))[0]
+    )
+
+    seed_queries = seed_papers
+    if not seed_queries and workshop_description.strip():
+        seed_queries = derive_seed_queries_from_workshop(model, workshop_description)
+        if seed_queries:
+            print(f"No --seed-papers given; auto-derived survey queries: {seed_queries}")
+
     for gen_idx in range(max_num_generations):
-        print()
-        print(f"Generating proposal {gen_idx + 1}/{max_num_generations}")
+        print(f"\nRunning debate for idea {gen_idx + 1}/{max_num_generations}")
+        prev_ideas_string = "\n\n".join(
+            json.dumps({k: v for k, v in idea.items() if k != "_debate"})
+            for idea in ideas
+        )
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        transcript_dir = osp.join(debates_root, f"idea_{gen_idx:02d}_{timestamp}")
         try:
-            prev_ideas_string = "\n\n".join(idea_str_archive)
-
-            last_tool_results = ""
-            idea_finalized = False
-            msg_history = []
-
-            for reflection_round in range(num_reflections):
-                if reflection_round == 0:
-                    # Use the initial idea generation prompt
-                    prompt_text = idea_generation_prompt.format(
-                        workshop_description=workshop_description,
-                        prev_ideas_string=prev_ideas_string,
-                    )
-                else:
-                    # Use the reflection prompt, including tool results if any
-                    prompt_text = idea_reflection_prompt.format(
-                        current_round=reflection_round + 1,
-                        num_reflections=num_reflections,
-                        last_tool_results=last_tool_results or "No new results.",
-                    )
-
-                response_text, msg_history = get_response_from_llm(
-                    prompt=prompt_text,
-                    client=client,
-                    model=model,
-                    system_message=system_prompt,
-                    msg_history=msg_history,
-                )
-
-                # Parse the LLM's response
-                try:
-                    # Use regular expressions to extract the components
-                    action_pattern = r"ACTION:\s*(.*?)\s*ARGUMENTS:"
-                    arguments_pattern = r"ARGUMENTS:\s*(.*?)(?:$|\nTHOUGHT:|\n$)"
-
-                    action_match = re.search(
-                        action_pattern, response_text, re.DOTALL | re.IGNORECASE
-                    )
-                    arguments_match = re.search(
-                        arguments_pattern, response_text, re.DOTALL | re.IGNORECASE
-                    )
-
-                    if not all([action_match, arguments_match]):
-                        raise ValueError("Failed to parse the LLM response.")
-
-                    action = action_match.group(1).strip()
-                    arguments_text = arguments_match.group(1).strip()
-                    print(f"Action: {action}")
-                    print(f"Arguments: {arguments_text}")
-
-                    # If arguments are wrapped in ```json blocks, extract the content
-                    if arguments_text.startswith("```json"):
-                        arguments_text = re.search(
-                            r"```json\s*(.*?)\s*```", arguments_text, re.DOTALL
-                        ).group(1)
-
-                    # Process the action and arguments
-                    if action in tools_dict:
-                        # It's a tool we have defined
-                        tool = tools_dict[action]
-                        # Parse arguments
-                        try:
-                            arguments_json = json.loads(arguments_text)
-                        except json.JSONDecodeError:
-                            raise ValueError(f"Invalid arguments JSON for {action}.")
-
-                        # Use the tool
-                        try:
-                            # Assuming the arguments match the parameters of the tool
-                            result = tool.use_tool(**arguments_json)
-                            last_tool_results = result
-                        except Exception as e:
-                            last_tool_results = f"Error using tool {action}: {str(e)}"
-                    elif action == "FinalizeIdea":
-                        # Parse arguments
-                        try:
-                            arguments_json = json.loads(arguments_text)
-                            idea = arguments_json.get("idea")
-                            if not idea:
-                                raise ValueError("Missing 'idea' in arguments.")
-
-                            # Append the idea to the archive
-                            idea_str_archive.append(json.dumps(idea))
-                            print(f"Proposal finalized: {idea}")
-                            idea_finalized = True
-                            break
-                        except json.JSONDecodeError:
-                            raise ValueError("Invalid arguments JSON for FinalizeIdea.")
-                    else:
-                        print(
-                            "Invalid action. Please specify one of the available tools."
-                        )
-                        print(f"Available actions are: {tool_names_str}")
-                except Exception as e:
-                    print(
-                        f"Failed to parse LLM response. Response text:\n{response_text}"
-                    )
-                    traceback.print_exc()
-                    break  # Exit the loop if parsing fails
-
-            if idea_finalized:
-                continue  # Move to the next idea
-
-        except Exception as e:
-            print("Failed to generate proposal:")
+            idea = run_debate_for_idea(
+                workshop_description=workshop_description,
+                seed_papers=seed_queries,
+                prev_ideas_string=prev_ideas_string,
+                max_debate_rounds=max_debate_rounds,
+                transcript_dir=transcript_dir,
+                model=model,
+            )
+            ideas.append(idea)
+            status = "locked" if idea["_debate"]["locked"] else "FLAGGED (unresolved at round cap)"
+            print(f"Idea {gen_idx + 1} finished: {status}. Transcript: {transcript_dir}")
+        except Exception:
+            print(f"Failed to generate idea {gen_idx + 1}:")
             traceback.print_exc()
             continue
-
-    # Save ideas
-    ideas = [json.loads(idea_str) for idea_str in idea_str_archive]
 
     with open(idea_fname, "w") as f:
         json.dump(ideas, f, indent=4)
@@ -268,52 +394,47 @@ def generate_temp_free_idea(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate AI scientist proposals - template free"
+        description="Generate AI scientist proposals via a proposer/challenger/evaluator debate"
     )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="gpt-4o-2024-05-13",
-        choices=AVAILABLE_LLMS,
-        help="Model to use for AI Scientist.",
-    )
-    parser.add_argument(
-        "--max-num-generations",
-        type=int,
-        default=1,
-        help="Maximum number of proposal generations.",
-    )
+    parser.add_argument("--model", type=str, default="fugu")
+    parser.add_argument("--max-num-generations", type=int, default=1)
     parser.add_argument(
         "--workshop-file",
         type=str,
-        default="ideas/i_cant_believe_its_not_better.md",
-        help="Path to the workshop description file.",
+        default=None,
+        help="Optional workshop description file. If omitted, --seed-papers alone "
+        "defines the space to propose in.",
     )
+    parser.add_argument("--max-debate-rounds", type=int, default=12)
     parser.add_argument(
-        "--num-reflections",
-        type=int,
-        default=5,
-        help="Number of reflection rounds per proposal.",
+        "--seed-papers",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Local PDF paths and/or search queries for seed papers to read "
+        "before debating, so the proposer starts grounded instead of cold.",
     )
     args = parser.parse_args()
 
-    # Create the LLM client
-    client, client_model = create_client(args.model)
+    if args.workshop_file:
+        with open(args.workshop_file, "r") as f:
+            workshop_description = f.read()
+        print(f"Using workshop description from {args.workshop_file} for idea generation.")
+        idea_fname = args.workshop_file.replace(".md", ".json")
+    else:
+        if not args.seed_papers:
+            raise ValueError("Provide --workshop-file and/or --seed-papers.")
+        workshop_description = ""
+        print("No --workshop-file given; proposing freely in the area of --seed-papers.")
+        idea_fname = "ideas/seed_paper_ideas.json"
 
-    with open(args.workshop_file, "r") as f:
-        workshop_description = f.read()
-    print(f"Using workshop description from {args.workshop_file} for idea generation.")
-    print(f"Workshop description:\n{workshop_description}")
-
-    # Create output filename by replacing .md extension with .json
-    idea_fname = args.workshop_file.replace(".md", ".json")
     print("Starting idea generation for", idea_fname)
     ideas = generate_temp_free_idea(
         idea_fname=idea_fname,
-        client=client,
-        model=client_model,
         workshop_description=workshop_description,
         max_num_generations=args.max_num_generations,
-        num_reflections=args.num_reflections,
+        max_debate_rounds=args.max_debate_rounds,
+        seed_papers=args.seed_papers,
+        model=args.model,
     )
-    print(f"{args.workshop_file} generated {len(ideas)} ideas.")
+    print(f"{idea_fname} generated {len(ideas)} ideas.")
