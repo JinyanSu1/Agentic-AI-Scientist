@@ -1,211 +1,119 @@
 <div align="center">
-  <a href="https://github.com/SakanaAI/AI-Scientist_v2/blob/main/docs/logo_v1.jpg">
-    <img src="docs/logo_v1.png" width="215" alt="AI Scientist v2 Logo" />
-  </a>
-  <h1>
-    <b>The AI Scientist-v2: Workshop-Level Automated</b><br>
-    <b>Scientific Discovery via Agentic Tree Search</b>
-  </h1>
+  <h1><b>Agentic AI Scientist</b></h1>
+  <p><i>An open-ended, agent-driven automated research loop.</i></p>
 </div>
 
-<p align="center">
-  📚 <a href="https://pub.sakana.ai/ai-scientist-v2/paper">[Paper]</a> |
-  📝 <a href="https://sakana.ai/ai-scientist-first-publication/"> [Blog Post]</a> |
-  📂 <a href="https://github.com/SakanaAI/AI-Scientist-ICLR2025-Workshop-Experiment"> [ICLR2025 Workshop Experiment]</a>
-</p>
+Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2). It replaces the original best-first tree-search (BFTS) pipeline with a single open-ended **research loop**: an agent proposes ideas through a structured debate, pilots them, verifies novelty, then develops the winner while an evaluator decides after each attempt whether to lock, revise, or abandon it — with no fixed stages or iteration counts baked in. The actual coding and running of experiments is delegated to [Codex CLI](https://github.com/openai/codex) as a coding worker; the loop is built on the [openai-agents](https://github.com/openai/openai-agents-python) SDK, and all models are routed through the internal **fugu** gateway.
 
-Fully autonomous scientific research systems are becoming increasingly capable, with AI playing a pivotal role in transforming how scientific discoveries are made.
-We are excited to introduce The AI Scientist-v2, a generalized end-to-end agentic system that has generated the first workshop paper written entirely by AI and accepted through peer review.
+> **⚠️ Caution — this executes LLM-written code.**
+> The research agent delegates to Codex running with `--dangerously-bypass-approvals-and-sandbox`, which will write and run arbitrary code and shell commands in its working directory. Run it only inside an isolated environment (e.g. a dedicated SLURM allocation or container) that you are willing to treat as the security boundary. Use at your own discretion.
 
-This system autonomously generates hypotheses, runs experiments, analyzes data, and writes scientific manuscripts. Unlike [its predecessor (AI Scientist-v1)](https://github.com/SakanaAI/AI-Scientist), the AI Scientist-v2 removes reliance on human-authored templates, generalizes across Machine Learning (ML) domains, and employs a progressive agentic tree search, guided by an experiment manager agent.
+## How it works
 
-> **Note:**
-> The AI Scientist-v2 doesn’t necessarily produce better papers than v1, especially when a strong starting template is available. v1 follows well-defined templates, leading to high success rates, while v2 takes a broader, more exploratory approach with lower success rates. v1 works best for tasks with clear objectives and a solid foundation, whereas v2 is designed for open-ended scientific exploration.
+The whole loop is orchestrated by [`run_research_loop.py`](run_research_loop.py):
 
-> **Caution!**
-> This codebase will execute Large Language Model (LLM)-written code. There are various risks and challenges associated with this autonomy, including the potential use of dangerous packages, uncontrolled web access, and the possibility of spawning unintended processes. Ensure that you run this within a controlled sandbox environment (e.g., a Docker container). Use at your own discretion.
+1. **Ideation debate** ([`ai_scientist/perform_ideation_temp_free.py`](ai_scientist/perform_ideation_temp_free.py)) — a Proposer / Challenger / Evaluator debate (openai-agents handoffs, structured outputs) produces candidate ideas, grounded in seed papers read in full and informed by the cross-run research wiki so previously-failed directions aren't repeated.
+2. **Pilots** — if there is more than one candidate, each gets a cheap, tightly turn-capped pilot run, and the winner is picked by *empirical signal*, not by how appealing the idea sounds.
+3. **Deep novelty verification** ([`verify_novelty`](ai_scientist/perform_idea_iteration.py)) — multiple targeted literature searches, explicit closest-prior-work identification, and a concurrent-work check on the pilot winner before real effort is committed.
+4. **Development loop** — the Research Agent ([`ai_scientist/perform_research_agent.py`](ai_scientist/perform_research_agent.py)) implements/runs/inspects experiments via Codex and decides what to do next; after each attempt an Evaluator decides **lock / revise / abandon**, up to a safety cap. Every outcome is logged to the persistent research wiki ([`ai_scientist/research_wiki.py`](ai_scientist/research_wiki.py)).
+5. **Writeup & review** ([`ai_scientist/perform_icbinb_writeup.py`](ai_scientist/perform_icbinb_writeup.py)) — on lock, the report is handed to multi-source citation search (Semantic Scholar + OpenAlex + arXiv, merged and deduplicated), LaTeX writeup (compiled with `tectonic`), and an LLM + VLM review.
 
-## Table of Contents
-
-1.  [Requirements](#requirements)
-    *   [Installation](#installation)
-    *   [Supported Models and API Keys](#supported-models-and-api-keys)
-2.  [Generate Research Ideas](#generate-research-ideas)
-3.  [Run AI Scientist-v2 Paper Generation Experiments](#run-ai-scientist-v2-paper-generation-experiments)
-4.  [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
-5.  [Frequently Asked Questions](#frequently-asked-questions)
-6.  [Acknowledgement](#acknowledgement)
+Papers read anywhere in a run are cached once per loop in a shared knowledge bank, so the same paper is never re-downloaded or re-summarized across stages.
 
 ## Requirements
 
-This code is designed to run on Linux with NVIDIA GPUs using CUDA and PyTorch.
+Designed to run on Linux, with NVIDIA GPUs available to the experiment worker.
 
 ### Installation
 
 ```bash
 # Create a new conda environment
-conda create -n ai_scientist python=3.11
-conda activate ai_scientist
+conda create -n ai-scientist-v2 python=3.11
+conda activate ai-scientist-v2
 
-# Install PyTorch with CUDA support (adjust pytorch-cuda version for your setup)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
-
-# Install PDF and LaTeX tools
-conda install anaconda::poppler
-conda install conda-forge::chktex
-
-# Install Python package requirements
+# Python package requirements
 pip install -r requirements.txt
+
+# The agent framework used throughout the loop
+pip install openai-agents
 ```
 
-Installation usually takes no more than one hour.
+You also need:
 
-### Supported Models and API Keys
+- **[Codex CLI](https://github.com/openai/codex)** on `PATH`, configured with a profile named `fugu` (`~/.codex/fugu.config.toml`, provider `sakana`). The research agent shells out to `codex exec --profile fugu ...` to actually write and run experiment code.
+- **[tectonic](https://tectonic-typesetting.github.io/)** for LaTeX/PDF compilation of the final paper.
+- `pymupdf4llm` (in `requirements.txt`) for reading paper full text.
 
-#### OpenAI Models
-
-By default, the system uses the `OPENAI_API_KEY` environment variable for OpenAI models.
-
-#### Gemini Models
-
-By default, the system uses the `GEMINI_API_KEY` environment variable for Gemini models through OpenAI API.
-
-#### Claude Models via AWS Bedrock
-
-To use Claude models provided by Amazon Bedrock, install the necessary additional packages:
-```bash
-pip install anthropic[bedrock]
-```
-Next, configure valid [AWS Credentials](https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-envvars.html) and the target [AWS Region](https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html) by setting the following environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME`.
-
-#### Semantic Scholar API (Literature Search)
-
-Our code can optionally use a Semantic Scholar API Key (`S2_API_KEY`) for higher throughput during literature search [if you have one](https://www.semanticscholar.org/product/api). This is used during both the ideation and paper writing stages. The system should work without it, though you might encounter rate limits or reduced novelty checking during ideation. If you experience issues with Semantic Scholar, you can skip the citation phase during paper generation.
-
-#### Setting API Keys
-
-Ensure you provide the necessary API keys as environment variables for the models you intend to use. For example:
-```bash
-export OPENAI_API_KEY="YOUR_OPENAI_KEY_HERE"
-export S2_API_KEY="YOUR_S2_KEY_HERE"
-# Set AWS credentials if using Bedrock
-# export AWS_ACCESS_KEY_ID="YOUR_AWS_ACCESS_KEY_ID"
-# export AWS_SECRET_ACCESS_KEY="YOUR_AWS_SECRET_KEY"
-# export AWS_REGION_NAME="your-aws-region"
-```
-
-## Generate Research Ideas
-
-Before running the full AI Scientist-v2 experiment pipeline, you first use the `ai_scientist/perform_ideation_temp_free.py` script to generate potential research ideas. Each idea is produced by a **debate** between three LLM roles: a proposer drafts and revises the idea, a challenger critiques it on novelty, feasibility, resource requirements, and likely failure modes (using Semantic Scholar to ground novelty concerns), and an evaluator judges after every round whether the idea is ready to lock in or needs another round of revision.
-
-1.  **Prepare a Topic Description:** Create a Markdown file (e.g., `my_research_topic.md`) describing the research area or theme you want the AI to explore. This file should contain sections like `Title`, `Keywords`, `TL;DR`, and `Abstract` to define the scope of the research. Refer to the example file `ai_scientist/ideas/i_cant_believe_its_not_better.md` for the expected structure and content format. Place your file in a location accessible by the script (e.g., the `ai_scientist/ideas/` directory).
-
-2.  **Run the Ideation Script:** Execute the script from the main project directory, pointing it to your topic description file and specifying the desired LLM.
-
-    ```bash
-    python ai_scientist/perform_ideation_temp_free.py \
-     --workshop-file "ai_scientist/ideas/my_research_topic.md" \
-     --model gpt-4o-2024-05-13 \
-     --max-num-generations 20 \
-     --max-debate-rounds 12
-    ```
-    *   `--workshop-file`: Path to your topic description Markdown file.
-    *   `--model`: The LLM used for all three debate roles (proposer, challenger, evaluator; ensure you have the corresponding API key set).
-    *   `--max-num-generations`: How many distinct research ideas (independent debates) to attempt generating.
-    *   `--max-debate-rounds`: Safety cap on rounds per idea; the evaluator can lock the idea in earlier. If the cap is hit before the evaluator is satisfied, the idea is kept but marked `"_debate": {"flagged": true, ...}` rather than silently discarded or force-accepted — check `last_unresolved_issues` on flagged ideas before using them.
-    *   `--compaction-token-threshold` (default 6000): once a debate role's running context exceeds this many tokens, older rounds are condensed into a short note (written to the idea's debate transcript directory under `experiments/idea_debates/`) so long debates don't blow the context window; the raw per-round record is always kept on disk and can be recalled on demand via the `LookupDebateRound` tool.
-
-3.  **Output:** The script will generate a JSON file named after your input Markdown file (e.g., `ai_scientist/ideas/my_research_topic.json`). This file will contain a list of structured research ideas, including hypotheses, proposed experiments, related work analysis, and a `_debate` block recording how many rounds it took and whether it was cleanly locked or flagged.
-
-4.  **Proceed to Experiments:** Once you have the generated JSON file containing research ideas, you can proceed to the next section to run the experiments.
-
-This ideation step guides the AI Scientist towards specific areas of interest and produces concrete research directions to be tested in the main experimental pipeline.
-
-## Run AI Scientist-v2 Paper Generation Experiments
-
-Using the JSON file generated in the previous ideation step, you can now launch the main AI Scientist-v2 pipeline. This involves running experiments via agentic tree search, analyzing results, and generating a paper draft.
-
-Specify the models used for the write-up and review phases via command-line arguments.
-The configuration for the best-first tree search (BFTS) is located in `bfts_config.yaml`. Adjust parameters in this file as needed.
-
-Key tree search configuration parameters in `bfts_config.yaml`:
-
--   `agent` config:
-    -   Set `num_workers` (number of parallel exploration paths) and `steps` (maximum number of nodes to explore). For example, if `num_workers=3` and `steps=21`, the tree search will explore up to 21 nodes, expanding 3 nodes concurrently at each step.
-    -   `num_seeds`: Should generally be the same as `num_workers` if `num_workers` is less than 3. Otherwise, set `num_seeds` to 3.
-    -   Note: Other agent parameters like `k_fold_validation`, `expose_prediction`, and `data_preview` are not used in the current version.
--   `search` config:
-    -   `max_debug_depth`: The maximum number of times the agent will attempt to debug a failing node before abandoning that search path.
-    -   `debug_prob`: The probability of attempting to debug a failing node.
-    -   `num_drafts`: The number of initial root nodes (i.e., the number of independent trees to grow) during Stage 1.
-
-Example command to run AI-Scientist-v2 using a generated idea file (e.g., `my_research_topic.json`). Please review `bfts_config.yaml` for detailed tree search parameters (the default config includes `claude-3-5-sonnet` for experiments). Do not set `load_code` if you do not want to initialize experimentation with a code snippet.
+### Environment variables
 
 ```bash
-python launch_scientist_bfts.py \
- --load_ideas "ai_scientist/ideas/my_research_topic.json" \
- --load_code \
- --add_dataset_ref \
- --model_writeup o1-preview-2024-09-12 \
- --model_citation gpt-4o-2024-11-20 \
- --model_review gpt-4o-2024-11-20 \
- --model_agg_plots o3-mini-2025-01-31 \
- --num_cite_rounds 20
+export SAKANA_API_KEY="YOUR_FUGU_GATEWAY_KEY"   # required — all models route through the fugu gateway
+
+# Optional, for literature search:
+export S2_API_KEY="YOUR_S2_KEY"                 # higher-throughput Semantic Scholar (falls back to keyless + rate limits)
+export OPENALEX_MAILTO="you@example.com"         # polite pool for OpenAlex
 ```
 
-Once the initial experimental stage is complete, you will find a timestamped log folder inside the `experiments/` directory. Navigate to `experiments/"timestamp_ideaname"/logs/0-run/` within that folder to find the tree visualization file `unified_tree_viz.html`.
-After all experiment stages are complete, the writeup stage begins. The writeup stage typically takes about 20 to 30 minutes in total. Once it finishes, you should see `timestamp_ideaname.pdf` in the `timestamp_ideaname` folder.
-For this example run, all stages typically finish within several hours.
+## Usage
 
-## Citing The AI Scientist-v2
+### Run the full research loop
 
-If you use **The AI Scientist-v2** in your research, please cite our work as follows:
+Point the loop at one or more seed papers (local PDF paths and/or search queries) and/or a workshop-topic file, and it will handle ideation → pilots → novelty check → development → writeup end to end:
 
-```bibtex
-@article{aiscientist_v2,
-  title={The AI Scientist-v2: Workshop-Level Automated Scientific Discovery via Agentic Tree Search},
-  author={Yamada, Yutaro and Lange, Robert Tjarko and Lu, Cong and Hu, Shengran and Lu, Chris and Foerster, Jakob and Clune, Jeff and Ha, David},
-  journal={arXiv preprint arXiv:2504.08066},
-  year={2025}
-}
+```bash
+python run_research_loop.py \
+  --seed-papers "path/to/paper.pdf" "some topic to search for" \
+  --model fugu
 ```
 
-## Frequently Asked Questions
+Key flags (defaults in parentheses):
 
-**Why wasn't a PDF or a review generated for my experiment?**
+| Flag | Meaning |
+| --- | --- |
+| `--seed-papers` | Local PDF paths and/or search queries that define the space to propose in. |
+| `--workshop-file` | Optional Markdown topic description (alternative or complement to seed papers). |
+| `--start-idea-file` / `--start-idea-idx` | Skip ideation/pilots and develop an existing idea from a JSON file. |
+| `--model` (`fugu`) | Model used for every agent role. |
+| `--num-candidates` (`3`) | How many candidate ideas to generate and pilot. |
+| `--candidate-debate-rounds` (`3`) | Max Proposer/Challenger/Evaluator rounds per candidate. |
+| `--pilot-max-turns` (`12`) | Turn cap for each cheap pilot run. |
+| `--final-max-turns` (`60`) | Turn cap for each development round. |
+| `--max-safety-rounds` (`8`) | Hard cap on develop↔revise rounds if the evaluator never locks. |
+| `--max-novelty-retries` (`3`) | Attempts to re-ideate if the novelty check fails. |
+| `--num-cite-rounds` (`20`) | Citation-gathering rounds during writeup. |
+| `--writeup-retries` (`3`) | Retries for the LaTeX writeup. |
+| `--resume-loop-dir` | Resume an interrupted run from an existing `experiments/idea_loops/loop_*` directory. |
 
-The AI Scientist-v2 completes experiments with a success rate that depends on the chosen foundation model, and the complexity of the idea. Higher success rates are generally observed when using powerful models like Claude 3.5 Sonnet for the experimentation phase.
+### Generate ideas only
 
-**What is the estimated cost per experiment?**
+The ideation debate can be run standalone to produce a JSON idea file without developing anything:
 
-The ideation step cost depends on the LLM used and the number of generations/reflections, but is generally low (a few dollars). For the main experiment pipeline, using Claude 3.5 Sonnet for the experimentation phase typically costs around $15–$20 per run. The subsequent writing phase adds approximately $5 when using the default models specified in the example command. Using GPT-4o for `model_citation` is recommended as it can help reduce writing costs.
+```bash
+python ai_scientist/perform_ideation_temp_free.py \
+  --seed-papers "path/to/paper.pdf" "some topic" \
+  --model fugu \
+  --max-num-generations 5 \
+  --max-debate-rounds 12
+```
 
-**How do I run The AI Scientist-v2 for different subject fields?**
+### Outputs
 
-First, perform the [Generate Research Ideas](#generate-research-ideas) step. Create a new Markdown file describing your desired subject field or topic, following the structure of the example `ai_scientist/ideas/i_cant_believe_its_not_better.md`. Run the `perform_ideation_temp_free.py` script with this file to generate a corresponding JSON idea file. Then, proceed to the [Run AI Scientist-v2 Paper Generation Experiments](#run-ai-scientist-v2-paper-generation-experiments) step, using this JSON file with the `launch_scientist_bfts.py` script via the `--load_ideas` argument.
+Each run writes to a timestamped directory under `experiments/idea_loops/loop_<timestamp>/`:
 
-**What should I do if I have problems accessing the Semantic Scholar API?**
+- `candidates.json` — generated candidate ideas
+- `pilot_*/`, `novelty_check/` — pilot runs and the novelty verification workdir
+- `round_XX_<name>/` and `round_XX_outcome.json` — each development round's workdir and evaluator verdict
+- `current_idea.json` — the live idea (used for `--resume-loop-dir`)
+- `final_<timestamp>_<name>/` — the writeup: `idea.json`, `experiment_report.json`, `development_decision.json` (records whether the paper came from a clean `lock` or a `cap`), figures, and the compiled `.pdf` plus reviews
 
-The Semantic Scholar API is used to assess the novelty of generated ideas and to gather citations during the paper write-up phase. If you don't have an API key, encounter rate limits, you may be able to skip these phases.
-
-**I encountered a "CUDA Out of Memory" error. What can I do?**
-
-This error typically occurs when the AI Scientist-v2 attempts to load or run a model that requires more GPU memory than available on your system. To resolve this, you can try updating your ideation prompt file (`ai_scientist/ideas/my_research_topic.md`) to suggest using smaller models for the experiments.
+Cross-run memory of every idea tried (locked / abandoned / eliminated / capped) accumulates in `research_wiki.jsonl` and is fed back into future ideation.
 
 ## Acknowledgement
 
-The tree search component implemented within the `ai_scientist` directory is built on top of the [AIDE](https://github.com/WecoAI/aideml) project. We thank the AIDE developers for their valuable contributions and for making their work publicly available.
+This project is a fork of [SakanaAI's AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2); the writeup/review and literature-search components descend from that codebase, whose experiment engine was in turn built on top of the [AIDE](https://github.com/WecoAI/aideml) project. We thank the original authors for making their work publicly available.
 
+## License & Responsible Use
 
-## Star History
+This project inherits **The AI Scientist Source Code License** (a derivative of the Responsible AI License) from the upstream repository; see [`LICENSE`](LICENSE).
 
-[![Star History Chart](https://api.star-history.com/svg?repos=SakanaAI/AI-Scientist-v2&type=Date)](https://star-history.com/#SakanaAI/AI-Scientist-v2&Date)
-
-## ⚖️ License & Responsible Use
-
-This project is licensed under **The AI Scientist Source Code License** (a derivative of the Responsible AI License). 
-
-**Mandatory Disclosure:** By using this code, you are legally bound to clearly and prominently disclose the use of AI in any resulting scientific manuscripts or papers. 
-
-We recommend the following attribution in your paper's Abstract or Methods section:
-> "This manuscript was autonomously generated using [The AI Scientist](https://github.com/SakanaAI/AI-Scientist)."
+**Mandatory disclosure:** by using this code you are bound to clearly and prominently disclose the use of AI in any resulting scientific manuscripts or papers.
