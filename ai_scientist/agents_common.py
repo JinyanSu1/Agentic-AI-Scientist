@@ -76,10 +76,17 @@ def run_agent_with_retry(
 @dataclass
 class ResearchContext:
     """Passed as Runner.run(..., context=...) so tools know where to cache
-    knowledge-bank entries and what model to use for paper summarization."""
+    knowledge-bank entries and what model to use for paper summarization.
+
+    knowledge_bank_dir, when set, is where the paper cache lives; it should be a
+    directory shared across every stage of one research loop (pilots, novelty
+    check, development rounds, writeup) so the same paper is downloaded and
+    summarized once, not re-fetched per stage. If None, it falls back to workdir
+    (the old per-stage behavior)."""
 
     workdir: str
     model: str = "fugu"
+    knowledge_bank_dir: Optional[str] = None
 
 
 @function_tool
@@ -118,7 +125,8 @@ def read_paper_in_depth(
     ('why' -- what you're trying to figure out, e.g. your current research
     direction or hypothesis). Cached by title, so reading the same paper again
     (from any query that resolves to it) is instant and doesn't re-download it."""
-    return _read_paper_in_depth_impl(ctx.context.workdir, ctx.context.model, query_or_path, why)
+    base_folder = ctx.context.knowledge_bank_dir or ctx.context.workdir
+    return _read_paper_in_depth_impl(base_folder, ctx.context.model, query_or_path, why)
 
 
 @function_tool

@@ -132,7 +132,9 @@ Decide "lock" only when the challenger's most serious concerns are genuinely add
 Always end by producing your verdict."""
 
 
-def _build_agents(topic_framing: str, seed_papers_section: str, revision_context: str):
+def _build_agents(
+    topic_framing: str, seed_papers_section: str, revision_context: str, model: str = "fugu"
+):
     # Handoffs pass the full conversation history forward by default, so a
     # later agent in the chain can see earlier tool calls (e.g. the Proposer
     # reading a seed paper) and try to call the same tool itself. Every agent
@@ -143,14 +145,14 @@ def _build_agents(topic_framing: str, seed_papers_section: str, revision_context
     evaluator = Agent(
         name="Evaluator",
         instructions=EVALUATOR_INSTRUCTIONS,
-        model="fugu",
+        model=model,
         tools=common_tools,
         output_type=Verdict,
     )
     challenger = Agent(
         name="Challenger",
         instructions=CHALLENGER_INSTRUCTIONS,
-        model="fugu",
+        model=model,
         tools=common_tools,
     )
     proposer = Agent(
@@ -160,7 +162,7 @@ def _build_agents(topic_framing: str, seed_papers_section: str, revision_context
             seed_papers_section=seed_papers_section,
             revision_context=revision_context,
         ),
-        model="fugu",
+        model=model,
         tools=common_tools,
     )
 
@@ -189,9 +191,10 @@ def run_debate_round(
     revision_context: str,
     research_ctx: ResearchContext,
     max_turns: int = 20,
+    model: str = "fugu",
 ) -> tuple[Optional[IdeaDraft], Optional[Critique], Verdict]:
     proposer, draft_box, critique_box = _build_agents(
-        topic_framing, seed_papers_section, revision_context
+        topic_framing, seed_papers_section, revision_context, model=model
     )
     result = run_agent_with_retry(
         proposer,
@@ -232,9 +235,12 @@ def run_debate_for_idea(
     max_debate_rounds: int,
     transcript_dir: str,
     model: str = "fugu",
+    knowledge_bank_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     os.makedirs(transcript_dir, exist_ok=True)
-    research_ctx = ResearchContext(workdir=transcript_dir, model=model)
+    research_ctx = ResearchContext(
+        workdir=transcript_dir, model=model, knowledge_bank_dir=knowledge_bank_dir
+    )
 
     topic_framing = workshop_description.strip() or NO_WORKSHOP_TOPIC_FRAMING
     if prev_ideas_string.strip():
@@ -257,7 +263,7 @@ def run_debate_for_idea(
     round_idx = 0
     for round_idx in range(max_debate_rounds):
         draft, critique, verdict = run_debate_round(
-            topic_framing, seed_papers_section, revision_context, research_ctx
+            topic_framing, seed_papers_section, revision_context, research_ctx, model=model
         )
         _persist_round(transcript_dir, round_idx, draft, critique, verdict)
         if draft is not None:
@@ -340,6 +346,7 @@ def generate_temp_free_idea(
     reload_ideas: bool = True,
     seed_papers: Optional[List[str]] = None,
     model: str = "fugu",
+    knowledge_bank_dir: Optional[str] = None,
 ) -> List[Dict]:
     configure_fugu_as_default(model)
 
@@ -377,6 +384,7 @@ def generate_temp_free_idea(
                 max_debate_rounds=max_debate_rounds,
                 transcript_dir=transcript_dir,
                 model=model,
+                knowledge_bank_dir=knowledge_bank_dir,
             )
             ideas.append(idea)
             status = "locked" if idea["_debate"]["locked"] else "FLAGGED (unresolved at round cap)"

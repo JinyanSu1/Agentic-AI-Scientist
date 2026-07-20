@@ -74,7 +74,9 @@ Then, explicitly:
 4. Conclude is_novel: true only if the idea is genuinely distinct from what you found, not already published, and not obviously scooped by concurrent work."""
 
 
-def verify_novelty(idea: Dict[str, Any], workdir: str, model: str = "fugu") -> NoveltyVerdict:
+def verify_novelty(
+    idea: Dict[str, Any], workdir: str, model: str = "fugu", knowledge_bank_dir: str = None
+) -> NoveltyVerdict:
     configure_fugu_as_default(model)
     agent = Agent(
         name="NoveltyVerifier",
@@ -83,7 +85,7 @@ def verify_novelty(idea: Dict[str, Any], workdir: str, model: str = "fugu") -> N
         tools=[search_literature, read_paper_in_depth],
         output_type=NoveltyVerdict,
     )
-    ctx = ResearchContext(workdir=workdir, model=model)
+    ctx = ResearchContext(workdir=workdir, model=model, knowledge_bank_dir=knowledge_bank_dir)
     prompt = (
         f"IDEA:\n```json\n{json.dumps(idea, indent=2)}\n```\n\n"
         "Verify novelty thoroughly before we commit real development effort to this."
