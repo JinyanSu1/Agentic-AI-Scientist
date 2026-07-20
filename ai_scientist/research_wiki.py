@@ -15,7 +15,9 @@ DEFAULT_WIKI_PATH = "research_wiki.jsonl"
 
 
 def add_entry(idea: Dict[str, Any], outcome: str, reason: str, wiki_path: str = DEFAULT_WIKI_PATH) -> None:
-    """outcome: 'locked' | 'abandoned' | 'eliminated' (didn't win a pilot comparison)."""
+    """outcome: 'locked' | 'abandoned' | 'eliminated' (didn't win a pilot comparison)
+    | 'capped' (written up but the evaluator never cleanly locked it -- it hit the
+    development safety cap after repeated revisions)."""
     entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "name": idea.get("Name", "unknown"),
@@ -45,6 +47,7 @@ def format_wiki_section(wiki_path: str = DEFAULT_WIKI_PATH, max_entries: int = 3
 
     failed = [e for e in entries if e["outcome"] in ("abandoned", "eliminated")]
     locked = [e for e in entries if e["outcome"] == "locked"]
+    capped = [e for e in entries if e["outcome"] == "capped"]
 
     lines = [
         "RESEARCH WIKI -- ideas already tried across all previous runs. Do not "
@@ -59,10 +62,19 @@ def format_wiki_section(wiki_path: str = DEFAULT_WIKI_PATH, max_entries: int = 3
         lines.append("\nPreviously failed/eliminated ideas (avoid repeating):")
         for e in failed:
             lines.append(f"- {e['title']} ({e['name']}): {e['hypothesis']}\n  Why it failed: {e['reason']}")
+    if capped:
+        lines.append(
+            "\nIdeas written up but never cleanly locked (hit the development "
+            "safety cap after repeated revisions -- treat as weak/unresolved; "
+            "only revisit with a materially stronger angle):"
+        )
+        for e in capped:
+            lines.append(f"- {e['title']} ({e['name']}): {e['hypothesis']}\n  Note: {e['reason']}")
 
     # Same-direction repeated-failure flag, matching ARIS's "3+ failed ideas
     # trigger re-ideation suggestion" -- surface it, don't decide for the caller.
-    if len(failed) >= 3:
+    # Capped ideas count as struggling directions too.
+    if len(failed) + len(capped) >= 3:
         lines.append(
             f"\nNote: {len(failed)} ideas have failed/been eliminated recently. If "
             "they cluster around the same underlying approach, consider a "

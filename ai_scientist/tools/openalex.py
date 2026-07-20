@@ -1,3 +1,4 @@
+import datetime
 import os
 import re
 import requests
@@ -10,6 +11,36 @@ from ai_scientist.tools.base_tool import BaseTool
 from ai_scientist.tools.semantic_scholar import on_backoff
 
 OPENALEX_BASE_URL = "https://api.openalex.org/works"
+
+# When OpenAlex's *daily* request budget is exhausted it returns 429 with a
+# ~19-20h Retry-After (the budget resets at UTC midnight). That is not an
+# ordinary rate limit: retrying it through backoff just burns ~120s per call
+# against a source that cannot recover until tomorrow. Once we see it, disable
+# OpenAlex entirely until the budget resets instead of retrying every call.
+_skip_openalex_until: float = 0.0
+
+
+def _seconds_until_utc_midnight() -> float:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    tomorrow = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return (tomorrow - now).total_seconds()
+
+
+def _is_daily_budget_exhausted(rsp: requests.Response) -> bool:
+    """Distinguish OpenAlex's daily-budget 429 (hours-long Retry-After / a body
+    mentioning the daily budget) from an ordinary per-second rate limit (a
+    small, seconds-scale Retry-After that backoff should keep retrying)."""
+    if rsp.status_code != 429:
+        return False
+    try:
+        if int(rsp.headers.get("Retry-After", "")) > 1800:  # >30 min => not per-second
+            return True
+    except (TypeError, ValueError):
+        pass
+    body = (rsp.text or "").lower()
+    return "budget" in body or "daily" in body
 
 
 def _reconstruct_abstract(abstract_inverted_index: Optional[Dict[str, List[int]]]) -> str:
@@ -129,7 +160,12 @@ Abstract: {paper.get("abstract", "No abstract available.")}"""
 def search_for_papers(
     query, result_limit=10, mailto: Optional[str] = None
 ) -> Union[None, List[Dict]]:
+    global _skip_openalex_until
     if not query:
+        return None
+
+    if time.time() < _skip_openalex_until:
+        # Daily budget known-exhausted earlier this UTC day; don't even try.
         return None
 
     params = {
@@ -143,6 +179,14 @@ def search_for_papers(
     rsp = requests.get(OPENALEX_BASE_URL, params=params)
     print(f"Response Status Code: {rsp.status_code}")
     print(f"Response Content: {rsp.text[:500]}")
+    if _is_daily_budget_exhausted(rsp):
+        wait = _seconds_until_utc_midnight()
+        _skip_openalex_until = time.time() + wait
+        print(
+            f"OpenAlex daily request budget exhausted; skipping OpenAlex for the "
+            f"rest of the UTC day (~{wait / 3600:.1f}h) instead of retrying."
+        )
+        return None
     rsp.raise_for_status()
     results = rsp.json()
     works = results.get("results", [])

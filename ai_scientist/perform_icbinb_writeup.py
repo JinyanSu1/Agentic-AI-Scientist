@@ -688,13 +688,20 @@ def load_experiment_report_text(base_folder):
     return json.dumps(report, indent=2)
 
 
-def gather_seed_context(base_folder, idea_text, model, max_seed_papers=4):
+def gather_seed_context(
+    base_folder, idea_text, model, max_seed_papers=4, knowledge_bank_dir=None
+):
     """
     Extract the papers mentioned in the idea's Related Work section, search for and
     download them, and read the full text (falling back to the abstract if the PDF
     isn't fetchable), so citation search can be grounded in papers actually read
     rather than guessed at from the idea text alone. Cached to disk to survive resumes.
+
+    knowledge_bank_dir, if given, is the shared per-loop paper cache so papers read
+    earlier in the loop (pilots/novelty/development) aren't re-downloaded and
+    re-summarized here; falls back to base_folder for the old per-stage behavior.
     """
+    bank_folder = knowledge_bank_dir or base_folder
     seed_cache_path = osp.join(base_folder, "seed_context.txt")
     if osp.exists(seed_cache_path):
         with open(seed_cache_path, "r") as f:
@@ -748,7 +755,7 @@ In <JSON>, respond with a single field "Papers": a list of search-friendly strin
             paper = papers[0]
             # Checks the knowledge bank by title first; only fetches/summarizes
             # (and caches) if this paper hasn't been read before in this idea_dir.
-            summary = get_paper_knowledge(base_folder, paper, model, idea_context=idea_text)
+            summary = get_paper_knowledge(bank_folder, paper, model, idea_context=idea_text)
             seed_sections.append(f"### {paper.get('title', query)}\n{summary}")
 
         seed_context = "\n\n".join(seed_sections)
@@ -762,7 +769,9 @@ In <JSON>, respond with a single field "Papers": a list of search-friendly strin
     return seed_context
 
 
-def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-05-13"):
+def gather_citations(
+    base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-05-13", knowledge_bank_dir=None
+):
     """
     Gather citations for a paper, with ability to resume from previous progress.
 
@@ -770,6 +779,7 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
         base_folder: Path to project folder
         num_cite_rounds: Maximum number of citation gathering rounds
         small_model: Model to use for citation collection
+        knowledge_bank_dir: Shared per-loop paper cache (see gather_seed_context)
         resume: Whether to try to resume from previous progress
 
     Returns:
@@ -805,7 +815,9 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
 
         # Read the papers referenced in Related Work before searching for more,
         # so query generation is grounded in papers actually read, not guessed at.
-        seed_context = gather_seed_context(base_folder, idea_text, small_model)
+        seed_context = gather_seed_context(
+            base_folder, idea_text, small_model, knowledge_bank_dir=knowledge_bank_dir
+        )
 
         # Run small model for citation additions
         client, client_model = create_client(small_model)

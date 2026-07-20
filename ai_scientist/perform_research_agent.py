@@ -50,7 +50,11 @@ When you're done -- either because you have a solid answer, or because you've hi
 
 
 def run_research_agent(
-    idea: Dict[str, Any], workdir: str, max_turns: int = 60, model: str = "fugu"
+    idea: Dict[str, Any],
+    workdir: str,
+    max_turns: int = 60,
+    model: str = "fugu",
+    knowledge_bank_dir: str = None,
 ) -> ExperimentReport:
     configure_fugu_as_default(model)
     agent = Agent(
@@ -67,7 +71,7 @@ def run_research_agent(
         ],
         output_type=ExperimentReport,
     )
-    ctx = ResearchContext(workdir=workdir, model=model)
+    ctx = ResearchContext(workdir=workdir, model=model, knowledge_bank_dir=knowledge_bank_dir)
     # A retry here re-runs the whole conversation (Codex calls included) from
     # scratch -- expensive if it happens late, but far cheaper than losing the
     # entire multi-hour pipeline run to one garbled final-answer generation.

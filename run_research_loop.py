@@ -98,6 +98,29 @@ def rank_pilots(
     return result.final_output
 
 
+def load_latest_round_report(loop_dir: str) -> tuple[Optional[ExperimentReport], Optional[str]]:
+    """Reconstruct the most recent round's ExperimentReport (and its workdir) from
+    the round_XX_outcome.json files on disk. Used when resuming a loop that already
+    hit the safety cap: no new round runs, so there's no in-memory report to write
+    up -- without this the writeup handoff would crash on a None report."""
+    outcomes = sorted(
+        f for f in os.listdir(loop_dir)
+        if f.startswith("round_") and f.endswith("_outcome.json")
+    )
+    if not outcomes:
+        return None, None
+    with open(osp.join(loop_dir, outcomes[-1])) as f:
+        payload = json.load(f)
+    try:
+        report = ExperimentReport(**payload["report"])
+    except Exception:
+        return None, None
+    idea_name = payload.get("idea", {}).get("Name", "idea")
+    round_idx = int(outcomes[-1].split("_")[1])
+    workdir = osp.join(loop_dir, f"round_{round_idx:02d}_{idea_name}")
+    return report, (workdir if osp.isdir(workdir) else loop_dir)
+
+
 def run_development_loop(
     idea: Dict[str, Any],
     loop_dir: str,
@@ -111,6 +134,7 @@ def run_development_loop(
     Evaluator decides lock/revise/abandon after each attempt), followed by the
     writeup handoff on lock. Shared between a fresh run and --resume-loop-dir
     so the two paths can't drift out of sync."""
+    kb_dir = osp.join(loop_dir, "knowledge_bank")
     decision = None
     workdir, report = current_workdir, latest_report
     for round_idx in range(start_round, args.max_safety_rounds):
@@ -123,7 +147,10 @@ def run_development_loop(
         else:
             workdir = osp.join(loop_dir, f"round_{round_idx:02d}_{idea.get('Name', 'idea')}")
             print(f"\n=== Round {round_idx}: developing '{idea.get('Name')}' in {workdir} ===")
-            report = run_research_agent(idea, workdir, max_turns=args.final_max_turns, model=args.model)
+            report = run_research_agent(
+                idea, workdir, max_turns=args.final_max_turns, model=args.model,
+                knowledge_bank_dir=kb_dir,
+            )
 
         verdict = evaluate_experiment(idea, report, model=args.model)
         print(f"Evaluator decision: {verdict.decision}\nReasoning: {verdict.reasoning}")
@@ -148,13 +175,37 @@ def run_development_loop(
     else:
         print(f"Hit safety cap of {args.max_safety_rounds} rounds without a 'lock' decision.")
         decision = "cap"
+        # Record it in the cross-run wiki -- otherwise the runs that struggled
+        # most (never locked) are exactly the ones the wiki has no memory of, and
+        # ideation could keep re-proposing them. 'capped' is distinct from a real
+        # lock so future ideation treats it as weak/unresolved.
+        research_wiki.add_entry(
+            idea,
+            "capped",
+            f"Hit the safety cap of {args.max_safety_rounds} development rounds "
+            "without the evaluator ever locking (last verdict was still 'revise'). "
+            "Written up, but not a clean lock.",
+            args.wiki_path,
+        )
 
     if decision == "abandon":
         print("Idea was abandoned; not proceeding to writeup.")
         return
 
-    print(f"\n=== Writing up '{idea.get('Name')}' ===")
-    idea_dir = run_writeup(idea, report, workdir, loop_dir, args)
+    if report is None:
+        # Resumed a loop that already sat at the safety cap: no round ran this
+        # invocation, so there's no in-memory report. Recover the last recorded
+        # one from disk rather than crashing in run_writeup on a None report.
+        report, workdir = load_latest_round_report(loop_dir)
+        if report is None:
+            print(
+                "No experiment report available (loop is already at the safety cap "
+                "with no recoverable round outcome); cannot write up. Nothing to do."
+            )
+            return
+
+    print(f"\n=== Writing up '{idea.get('Name')}' (development outcome: {decision}) ===")
+    idea_dir = run_writeup(idea, report, workdir, loop_dir, args, decision=decision)
     print(f"Done. Final results in {idea_dir}")
 
 
@@ -165,7 +216,14 @@ def find_pdf_path_for_review(idea_dir: str):
     return osp.join(idea_dir, pdf_files[0])
 
 
-def run_writeup(idea: Dict[str, Any], report: ExperimentReport, workdir: str, loop_dir: str, args) -> str:
+def run_writeup(
+    idea: Dict[str, Any],
+    report: ExperimentReport,
+    workdir: str,
+    loop_dir: str,
+    args,
+    decision: str = "lock",
+) -> str:
     """Bridge our ExperimentReport into the existing citation/writeup/tectonic
     pipeline: build an idea_dir with idea.json/idea.md/experiment_report.json,
     pull over any plots the Research Agent's Codex calls produced, then run the
@@ -181,6 +239,11 @@ def run_writeup(idea: Dict[str, Any], report: ExperimentReport, workdir: str, lo
     idea_to_markdown(idea, osp.join(idea_dir, "idea.md"))
     with open(osp.join(idea_dir, "experiment_report.json"), "w") as f:
         json.dump(report.model_dump(), f, indent=2)
+    # Distinguish a real evaluator "lock" from a "cap" writeup (safety cap hit
+    # while the last verdict was still "revise"), so a capped paper is never
+    # silently indistinguishable from a locked one in the output.
+    with open(osp.join(idea_dir, "development_decision.json"), "w") as f:
+        json.dump({"decision": decision, "locked": decision == "lock"}, f, indent=2)
 
     for rel_path in report.files_of_interest:
         src = osp.join(workdir, rel_path)
@@ -188,7 +251,10 @@ def run_writeup(idea: Dict[str, Any], report: ExperimentReport, workdir: str, lo
             shutil.copy(src, osp.join(idea_dir, "figures", osp.basename(src)))
 
     citations_text = gather_citations(
-        idea_dir, num_cite_rounds=args.num_cite_rounds, small_model=args.model
+        idea_dir,
+        num_cite_rounds=args.num_cite_rounds,
+        small_model=args.model,
+        knowledge_bank_dir=osp.join(loop_dir, "knowledge_bank"),
     )
     writeup_success = False
     for attempt in range(args.writeup_retries):
@@ -298,6 +364,11 @@ def main():
     os.makedirs(loop_dir, exist_ok=True)
     print(f"Research loop working directory: {loop_dir}")
 
+    # One paper cache shared across every stage of this loop (candidate debates,
+    # pilots, novelty check, development rounds, writeup), so a paper is
+    # downloaded + summarized once instead of re-fetched per stage.
+    kb_dir = osp.join(loop_dir, "knowledge_bank")
+
     workshop_description = ""
     if args.workshop_file:
         with open(args.workshop_file) as f:
@@ -324,6 +395,7 @@ def main():
                 reload_ideas=(i > 0),  # accumulate so prev_ideas_string keeps later candidates distinct
                 seed_papers=args.seed_papers,
                 model=args.model,
+                knowledge_bank_dir=kb_dir,
             )
             candidates.append(ideas[-1])
 
@@ -333,7 +405,10 @@ def main():
         for i, idea in enumerate(candidates):
             pilot_dir = osp.join(loop_dir, f"pilot_{i:02d}_{idea.get('Name', 'idea')}")
             print(f"\n--- Pilot {i}: {idea.get('Name')} ---")
-            report = run_research_agent(idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model)
+            report = run_research_agent(
+                idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model,
+                knowledge_bank_dir=kb_dir,
+            )
             reports.append(report)
             print(f"Pilot {i} ({idea.get('Name')}): {report.status} -- {report.summary[:300]}")
 
@@ -359,7 +434,7 @@ def main():
     print(f"\n=== Deep novelty verification on '{idea.get('Name')}' ===")
     novelty_workdir = osp.join(loop_dir, "novelty_check")
     for novelty_attempt in range(args.max_novelty_retries):
-        novelty = verify_novelty(idea, novelty_workdir, model=args.model)
+        novelty = verify_novelty(idea, novelty_workdir, model=args.model, knowledge_bank_dir=kb_dir)
         print(f"Novel: {novelty.is_novel}. Closest prior work: {novelty.closest_prior_work}")
         print(f"Differentiation: {novelty.differentiation}\nReasoning: {novelty.reasoning}")
         if novelty.is_novel:
@@ -386,6 +461,7 @@ def main():
             reload_ideas=False,
             seed_papers=args.seed_papers,
             model=args.model,
+            knowledge_bank_dir=kb_dir,
         )
         idea = fresh_ideas[-1]
         have_report_for_round0 = False  # the fresh idea has no pilot report yet
