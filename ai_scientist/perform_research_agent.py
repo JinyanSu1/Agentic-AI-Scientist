@@ -59,31 +59,35 @@ This may be a continuation: your working directory can already contain code, dat
 
 Work iteratively: implement, run, look at the actual results, and decide what to do next based on what you see -- fix bugs, add baselines, scale up, try alternative approaches, run ablations, whatever the results actually call for. Don't pad with unnecessary steps once you have a clear, well-supported answer to your hypothesis (positive or negative). Don't declare success on a single lucky run where variance matters -- make sure your evidence would survive scrutiny (sensible baselines, no obvious bugs, replication where it matters). Prefer to fully nail a small, clean core result over spreading yourself thin across an over-ambitious protocol you can't finish.
 
-When you're done -- either because you have a solid answer, or because you've hit a genuine dead end worth reporting honestly -- produce your final ExperimentReport. A clean, well-supported negative result is a valid "completed" status; a confused or buggy experiment is not, even if something looked promising at one point. Always fill in the handoff fields (working_assets, completed_steps, dead_ends, next_steps) honestly, as if briefing a colleague who will continue in this same directory -- these are what let the next round build on your work instead of starting over."""
+When you're done -- either because you have a solid answer, or because you've hit a genuine dead end worth reporting honestly -- write a clear final summary as your last message. You do NOT need to format it as JSON or fill any fields: a separate step reads your summary plus the actual result files and turns it into the structured report. In that summary cover: what you did; the concrete results with actual numbers; which files in the working directory hold the real results and which already work; what you tried that failed and why; and what a next round should do. A clean, well-supported negative result is a real result, not a failure; a confused or buggy experiment is not, even if something looked promising at one point. Ground every claim in what actually ran -- never state a result you did not produce."""
 
 
-REPORT_SALVAGE_INSTRUCTIONS = """You are salvaging a research run that ran out of its step budget before the researcher could write a final report. You are given a listing of the working directory and the contents of its result/log files. Produce an honest ExperimentReport from ONLY what these files actually show -- do NOT invent results. Set status to "incomplete". In summary and key_results, report only what the files substantiate, or state plainly that no evaluable results were produced yet. Fill working_assets / completed_steps / dead_ends / next_steps as a handoff so whoever continues in this same directory can pick up where this left off rather than starting over."""
+VALID_STATUSES = ("completed", "abandoned", "incomplete")
+
+REPORT_SYNTHESIS_INSTRUCTIONS = """You write the final ExperimentReport for one research round, from clean context -- so it is accurate and well-formed even though the researcher's own working session was long. You are given: the idea, the researcher's own final notes (which may be empty if they ran out of their step budget before summarizing), and a listing plus the contents of the actual result/log files in the working directory. Produce an honest report grounded ONLY in this evidence -- do NOT invent results.
+
+- status: exactly one of "completed" / "incomplete" / "abandoned". "completed" if there is a solid, well-supported answer to the hypothesis (a clean positive OR a clean negative result both count). "incomplete" if the round did not reach an evaluable result (e.g. it was cut off, or produced no evaluable evidence yet). "abandoned" only if the evidence shows the idea's premise is genuinely broken.
+- summary and key_results: report only what the files and notes substantiate, with concrete numbers wherever available.
+- files_of_interest: result/plot files worth citing or plotting in the paper.
+- working_assets / completed_steps / dead_ends / next_steps: a handoff so whoever continues in this same directory can build on the work rather than start over."""
 
 
-def _report_has_no_evidence(report: ExperimentReport) -> bool:
-    """A 'completed' report is unusable if it carries no concrete evidence at all
-    -- no non-empty key results AND no files of interest. This catches the
-    'well-formed but garbage/placeholder' report (WakeTrace's round-4 case) that
-    returns normally without raising MaxTurnsExceeded, so such a report never
-    silently reaches the evaluator as if it were a real result. A clean negative
-    result still lists its finding in key_results, so this stays high-precision."""
-    key_results = [k for k in (report.key_results or []) if str(k).strip()]
-    files = [f for f in (report.files_of_interest or []) if str(f).strip()]
-    return not key_results and not files
-
-
-def _distill_partial_report(
-    workdir: str, idea: Dict[str, Any], model: str, max_files: int = 8, per_file_chars: int = 2000
+def synthesize_report(
+    workdir: str,
+    idea: Dict[str, Any],
+    model: str,
+    agent_narrative: str = "",
+    max_files: int = 10,
+    per_file_chars: int = 2000,
 ) -> ExperimentReport:
-    """Salvage a partial ExperimentReport from what's physically on disk when the
-    agent hit its turn cap before producing one -- so a budget-exhausted round
-    yields an honest 'incomplete' report (and a handoff) grounded in the real
-    result files, instead of a forced, garbled final answer."""
+    """Produce the ExperimentReport in a SEPARATE, short, clean call rather than as
+    the research agent's final in-conversation turn. The long research conversation
+    (dozens of turns of Codex output near the context limit) is exactly where fugu's
+    structured output degrades into garbage; a fresh call over just the workdir files
+    + the agent's free-form notes produces a clean report (verified: the same model
+    garbles the in-conversation final turn but returns clean JSON from clean context).
+    agent_narrative may be empty (e.g. the round hit its turn cap before summarizing);
+    the report is then synthesized from the on-disk evidence alone."""
     listing = list_workdir_files(workdir)
     contents = []
     for line in listing.splitlines():
@@ -95,28 +99,33 @@ def _distill_partial_report(
     blob = "\n\n".join(contents) if contents else "(no readable result/log files found)"
 
     agent = Agent(
-        name="ReportSalvager",
-        instructions=REPORT_SALVAGE_INSTRUCTIONS,
+        name="ReportSynthesizer",
+        instructions=REPORT_SYNTHESIS_INSTRUCTIONS,
         model=model,
         output_type=ExperimentReport,
     )
     prompt = (
         f"IDEA:\n```json\n{json.dumps(idea, indent=2)}\n```\n\n"
+        f"RESEARCHER'S FINAL NOTES:\n{agent_narrative.strip() or '(none -- the round ended before a summary was written)'}\n\n"
         f"WORKING DIRECTORY LISTING:\n{listing}\n\n"
         f"FILE CONTENTS:\n{blob}"
     )
     try:
-        return run_agent_with_retry(agent, prompt, max_turns=2).final_output
+        report = run_agent_with_retry(agent, prompt, max_turns=2).final_output
     except Exception:
-        # Even salvage failed; return a minimal honest placeholder rather than raising.
         return ExperimentReport(
             status="incomplete",
-            summary="Ran out of the step budget before producing a report, and automatic "
-            "salvage from the working directory also failed.",
+            summary="A report could not be synthesized from the working directory "
+            "(the synthesis call failed).",
             key_results=[],
             files_of_interest=[],
             next_steps=["Inspect the working directory manually and continue from there."],
         )
+    if report.status not in VALID_STATUSES:
+        # Even the clean synthesis emitted an out-of-vocabulary status -- coerce it
+        # rather than let a garbage status reach the evaluator.
+        report.status = "incomplete"
+    return report
 
 
 def run_research_agent(
@@ -129,13 +138,14 @@ def run_research_agent(
     loop_dir: str = None,
     codex_timeout: int = 3600,
 ) -> ExperimentReport:
-    """Run one development round. If prior_context is given (a short handoff headline
-    from the previous round, which ran in this same workdir), it's prepended to the
-    kickoff so the agent continues from -- rather than restarts -- the earlier work;
-    the full prior history stays out of context and is reachable via recall_prior_rounds
-    (loop_dir points at the round_XX_outcome.json files). If the agent hits its turn
-    cap, a partial 'incomplete' report is salvaged from the workdir instead of a
-    forced, garbled final answer."""
+    """Run one development round. The agent works free-form (no output_type): its
+    final message is a plain-text summary, NOT the structured report. The
+    ExperimentReport is then produced by synthesize_report in a SEPARATE clean call
+    over the workdir files + that summary -- because the report garbles specifically
+    when emitted as the final turn of a long, heavy conversation, while a fresh clean
+    call produces a well-formed one. If the agent hits its turn cap, we synthesize
+    from the on-disk evidence alone (no narrative). prior_context is a short handoff
+    headline; the full prior history is reachable via recall_prior_rounds."""
     configure_fugu_as_default(model)
     agent = Agent(
         name="ResearchAgent",
@@ -150,7 +160,8 @@ def run_research_agent(
             search_literature,
             read_paper_in_depth,
         ],
-        output_type=ExperimentReport,
+        # No output_type on purpose -- the agent ends with a free-form summary and
+        # the structured report is synthesized separately (see synthesize_report).
     )
     ctx = ResearchContext(
         workdir=workdir, model=model, knowledge_bank_dir=knowledge_bank_dir,
@@ -164,27 +175,17 @@ def run_research_agent(
             "works, don't redo completed steps or repeat dead ends, and pick up from the "
             "next steps above. Confirm the directory contents first, then proceed."
         )
-    # A non-MaxTurns retry re-runs the whole conversation (Codex calls included)
-    # from scratch -- expensive if it happens late, but far cheaper than losing the
-    # entire multi-hour pipeline run to one garbled final-answer generation. A
-    # MaxTurnsExceeded is handled separately: rather than re-running (which would
-    # just hit the cap again), salvage a partial report from what's on disk.
+    # A retry re-runs the whole conversation (Codex calls included) from scratch --
+    # expensive late, but cheaper than losing the run to one bad generation. On
+    # MaxTurnsExceeded we don't re-run (it would just hit the cap again) -- we
+    # synthesize the report from what's already on disk, with no agent narrative.
     try:
-        report = run_agent_with_retry(agent, kickoff, context=ctx, max_turns=max_turns).final_output
+        result = run_agent_with_retry(agent, kickoff, context=ctx, max_turns=max_turns)
+        narrative = result.final_output if isinstance(result.final_output, str) else str(result.final_output)
     except MaxTurnsExceeded:
         print(
-            f"Research agent hit the {max_turns}-turn cap before producing a report; "
-            "salvaging a partial 'incomplete' report from the working directory."
+            f"Research agent hit the {max_turns}-turn cap; synthesizing the report from "
+            "the working directory (no final summary was written)."
         )
-        return _distill_partial_report(workdir, idea, model)
-
-    if _report_has_no_evidence(report):
-        # Well-formed but empty/garbage final report -- don't let it reach the
-        # evaluator as if it were a real result; salvage whatever is actually on
-        # disk instead (falls back to an honest 'incomplete' if nothing is there).
-        print(
-            "Final report carries no concrete results or files of interest; salvaging "
-            "from the working directory instead of trusting it."
-        )
-        return _distill_partial_report(workdir, idea, model)
-    return report
+        narrative = ""
+    return synthesize_report(workdir, idea, model, agent_narrative=narrative)

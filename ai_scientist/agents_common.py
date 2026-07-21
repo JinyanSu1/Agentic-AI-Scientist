@@ -37,6 +37,10 @@ def configure_fugu_as_default(model: str = "fugu") -> None:
     client = AsyncOpenAI(
         api_key=os.environ["SAKANA_API_KEY"],
         base_url="https://api.sakana.ai/v1",
+        # fugu can be slow to respond on very large research-agent contexts; a
+        # short default timeout there causes "Request timed out" -> a full
+        # from-scratch re-run. Give it generous headroom.
+        timeout=600,
     )
     # Tracing defaults to uploading run traces to OpenAI's platform using
     # OPENAI_API_KEY, which we don't have a valid one for and don't want anyway
