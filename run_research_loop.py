@@ -121,6 +121,27 @@ def load_latest_round_report(loop_dir: str) -> tuple[Optional[ExperimentReport],
     return report, (workdir if osp.isdir(workdir) else loop_dir)
 
 
+def _format_prior_handoff(report: Optional[ExperimentReport], n_prior_rounds: int) -> str:
+    """The SHORT headline prepended to the next round's kickoff -- deliberately just
+    where the last round left off + the immediate next steps, not the full history.
+    The rest (results, working assets, dead ends, verdicts of every prior round)
+    stays out of context and is retrievable on demand via the recall_prior_rounds
+    tool, so we surface only the essentials and let the agent search for detail."""
+    if report is None:
+        return ""
+    parts = [
+        f"CONTINUING PRIOR WORK -- you are in the SAME working directory as "
+        f"{n_prior_rounds} earlier development round(s). Their code/data/results are on "
+        "disk (list/read them), and the full detail of every prior round (results, what "
+        "worked, dead ends, verdicts) is retrievable with recall_prior_rounds -- use it "
+        "when you need specifics instead of assuming or redoing work.",
+        f"Where the last round left off: {report.summary}",
+    ]
+    if getattr(report, "next_steps", None):
+        parts.append("Immediate next steps:\n" + "\n".join(f"- {n}" for n in report.next_steps))
+    return "\n\n".join(parts)
+
+
 def run_development_loop(
     idea: Dict[str, Any],
     loop_dir: str,
@@ -135,8 +156,18 @@ def run_development_loop(
     writeup handoff on lock. Shared between a fresh run and --resume-loop-dir
     so the two paths can't drift out of sync."""
     kb_dir = osp.join(loop_dir, "knowledge_bank")
+    # One persistent experiment workdir for the whole development of this idea, so
+    # code/data/results built in one round physically survive into the next round
+    # (only a distilled handoff -- not the full transcript -- is replayed into the
+    # prompt). If we're continuing from a pilot winner, keep working in its dir so
+    # the pilot's assets carry forward too.
+    if have_report_for_round0 and current_workdir:
+        exp_workdir = current_workdir
+    else:
+        exp_workdir = osp.join(loop_dir, f"experiment_{idea.get('Name', 'idea')}")
     decision = None
     workdir, report = current_workdir, latest_report
+    prev_report = latest_report if have_report_for_round0 else None
     for round_idx in range(start_round, args.max_safety_rounds):
         with open(osp.join(loop_dir, "current_idea.json"), "w") as f:
             json.dump(idea, f, indent=2)
@@ -145,11 +176,16 @@ def run_development_loop(
             report = latest_report
             workdir = current_workdir
         else:
-            workdir = osp.join(loop_dir, f"round_{round_idx:02d}_{idea.get('Name', 'idea')}")
+            workdir = exp_workdir
+            n_prior = len(
+                [f for f in os.listdir(loop_dir)
+                 if f.startswith("round_") and f.endswith("_outcome.json")]
+            )
             print(f"\n=== Round {round_idx}: developing '{idea.get('Name')}' in {workdir} ===")
             report = run_research_agent(
                 idea, workdir, max_turns=args.final_max_turns, model=args.model,
-                knowledge_bank_dir=kb_dir,
+                knowledge_bank_dir=kb_dir, loop_dir=loop_dir, codex_timeout=args.codex_timeout,
+                prior_context=_format_prior_handoff(prev_report, n_prior),
             )
 
         verdict = evaluate_experiment(idea, report, model=args.model)
@@ -162,6 +198,7 @@ def run_development_loop(
                 indent=2,
             )
 
+        prev_report = report
         if verdict.decision == "lock":
             research_wiki.add_entry(idea, "locked", verdict.reasoning, args.wiki_path)
             decision = "lock"
@@ -333,6 +370,13 @@ def main():
     parser.add_argument("--num-cite-rounds", type=int, default=20)
     parser.add_argument("--writeup-retries", type=int, default=3)
     parser.add_argument(
+        "--codex-timeout",
+        type=int,
+        default=3600,
+        help="Wall-clock timeout (seconds) for a single Codex sub-task. Raise it if "
+        "individual experiment steps (e.g. real training) legitimately need longer.",
+    )
+    parser.add_argument(
         "--resume-loop-dir",
         type=str,
         default=None,
@@ -407,7 +451,7 @@ def main():
             print(f"\n--- Pilot {i}: {idea.get('Name')} ---")
             report = run_research_agent(
                 idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model,
-                knowledge_bank_dir=kb_dir,
+                knowledge_bank_dir=kb_dir, codex_timeout=args.codex_timeout,
             )
             reports.append(report)
             print(f"Pilot {i} ({idea.get('Name')}): {report.status} -- {report.summary[:300]}")
@@ -464,7 +508,17 @@ def main():
             knowledge_bank_dir=kb_dir,
         )
         idea = fresh_ideas[-1]
-        have_report_for_round0 = False  # the fresh idea has no pilot report yet
+        # Pilot the replacement too, so it enters development vetted by real
+        # empirical signal like the original pilot winner -- rather than skipping
+        # straight to development un-piloted.
+        print(f"Piloting the replacement idea '{idea.get('Name')}' before development...")
+        pilot_dir = osp.join(loop_dir, f"novelty_retry_{novelty_attempt}_pilot_{idea.get('Name', 'idea')}")
+        latest_report = run_research_agent(
+            idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model,
+            knowledge_bank_dir=kb_dir, codex_timeout=args.codex_timeout,
+        )
+        current_workdir = pilot_dir
+        have_report_for_round0 = True
 
     run_development_loop(
         idea,

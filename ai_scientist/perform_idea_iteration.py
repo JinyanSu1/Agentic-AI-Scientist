@@ -46,13 +46,19 @@ Status: {status}
 Summary: {summary}
 Key results: {key_results}
 
+ALREADY COMPLETED (keep these; the next round continues in the same workdir and will reuse them):
+{completed_steps}
+
+TRIED AND FAILED (do not re-introduce these as if they were new ideas):
+{dead_ends}
+
 EVALUATOR'S REASONING FOR REVISION:
 {reasoning}
 
 UNRESOLVED ISSUES TO ADDRESS:
 {unresolved_issues}
 
-Revise the idea to directly address what the experiment revealed. Stick to the spirit of the original idea unless the results show a genuine flaw that requires a different approach. Produce your revised idea."""
+Revise the idea to directly address what the experiment revealed. Stick to the spirit of the original idea unless the results show a genuine flaw that requires a different approach. Keep the scope executable: prefer tightening or fixing the existing plan over expanding it with more models/baselines/stages the agent may not be able to finish in its budget. If the current results already answer the core hypothesis cleanly -- even negatively -- lean toward a minimal revision rather than a larger protocol. Produce your revised idea."""
 
 
 class NoveltyVerdict(BaseModel):
@@ -124,6 +130,8 @@ def revise_idea_from_experiment(
             status=report.status,
             summary=report.summary,
             key_results=report.key_results,
+            completed_steps=getattr(report, "completed_steps", None) or "(none reported)",
+            dead_ends=getattr(report, "dead_ends", None) or "(none reported)",
             reasoning=verdict.reasoning,
             unresolved_issues=verdict.unresolved_issues,
         ),
