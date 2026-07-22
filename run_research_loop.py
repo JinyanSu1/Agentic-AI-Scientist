@@ -300,7 +300,7 @@ def run_writeup(
             base_folder=idea_dir,
             small_model=args.model,
             big_model=args.model,
-            page_limit=4,
+            page_limit=8,
             citations_text=citations_text,
         )
         if writeup_success:

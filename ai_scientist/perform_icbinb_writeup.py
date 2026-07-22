@@ -229,7 +229,7 @@ def extract_page_line_counts(pdf_file, first_page, last_page):
     return page_lines
 
 
-def check_page_limit(pdf_file, page_limit=4, timeout=30):
+def check_page_limit(pdf_file, page_limit=8, timeout=30):
     """
     Compile the LaTeX project in a temporary folder, then determine where the
     "References" section begins using cleaned text extraction. Next, count the
@@ -333,7 +333,7 @@ def get_citation_addition(
 ):
     report, citations = context
     msg_history = []
-    citation_system_msg_template = """You are an ambitious AI researcher who is looking to publish a paper to a workshop at ICLR 2025 that explores real-world pitfalls, failures, and challenges in deep learning.
+    citation_system_msg_template = """You are an ambitious AI researcher who is looking to publish a full paper at a top-tier NLP/ML venue through ACL Rolling Review (ARR).
 You have already completed the experiments and now you are looking to collect citations to related papers.
 This phase focuses on collecting references and annotating them to be integrated later.
 Collected citations will be added to a references.bib file.
@@ -539,10 +539,9 @@ This JSON will be automatically parsed, so ensure the format is precise."""
     return references_prompt, False
 
 
-writeup_system_message_template = """You are an ambitious AI researcher who is looking to publish a paper to the "I Can't Believe It's Not Better" (ICBINB) Workshop at ICLR 2025.
-This workshop aims to highlight real-world pitfalls, challenges, and negative or inconclusive results in deep learning, encouraging open discussion.
-You must accurately represent the results of the experiments.
-The main paper is limited to {page_limit} pages in single-column format, not counting references. In general, try to use the available space and include all relevant information.
+writeup_system_message_template = """You are an ambitious AI researcher who is looking to publish a full paper at a top-tier NLP/ML venue through ACL Rolling Review (ARR), using the official ACL (acl.sty) LaTeX style.
+You must accurately represent the results of the experiments. Positive, negative, or inconclusive findings are all valid as long as they are reported honestly and the evidence supports them.
+The main paper is limited to {page_limit} pages in the two-column ACL format, not counting references and appendix. In general, try to use the available space and include all relevant information.
 DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT.
 MINIMIZE THE USAGE OF ITEMIZE OR ENUMERATE. ONLY USE THEM IF THEY ARE ABSOLUTELY NECESSARY AND CONTAIN SUBSTANTIAL INFORMATION.
 Ensure that the tables and figures are correctly placed in a reasonable location and format.
@@ -580,8 +579,8 @@ Here are some tips for each section of the paper:
 
 - **Experiments** (if applicable):
   - Present results truthfully according to the data you have. Negative, unexpected, or inconclusive findings are valid contributions for this workshop.
-  - Include figures, tables, or real-world examples that illustrate the pitfalls.
-  - Include up to 4 figures in the main text. All other figures should be in the appendix.
+  - Include figures, tables, or examples that illustrate the findings.
+  - Include up to 6 figures in the main text. All other figures should be in the appendix.
 
 - **Conclusion**:
   - Summarize the main lessons learned or contributions.
@@ -642,7 +641,7 @@ Your current progress on the LaTeX write-up is:
 
 Produce the final version of the LaTeX manuscript now, ensuring the paper is coherent, concise, and reports results accurately.
 Return the entire file in full, with no unfilled placeholders!
-This must be an acceptable complete LaTeX writeup, suitable for a 4-page single-column workshop paper.
+This must be an acceptable complete LaTeX writeup in the two-column ACL (ARR) format, suitable for an 8-page main-text paper (references and appendix do not count toward the limit).
 Make sure to use the citations from the references.bib file.
 
 Please provide the updated LaTeX code for 'template.tex', wrapped in triple backticks
@@ -895,7 +894,7 @@ def perform_writeup(
     small_model="gpt-4o-2024-05-13",
     big_model="o1-2024-12-17",
     n_writeup_reflections=3,
-    page_limit=4,
+    page_limit=8,
 ):
     pdf_file = osp.join(base_folder, f"{osp.basename(base_folder)}.pdf")
     latex_folder = osp.join(base_folder, "latex")
@@ -918,7 +917,7 @@ def perform_writeup(
         # Prepare a new fresh latex folder
         if not osp.exists(osp.join(latex_folder, "template.tex")):
             shutil.copytree(
-                "ai_scientist/blank_icbinb_latex", latex_folder, dirs_exist_ok=True
+                "ai_scientist/blank_arr_latex", latex_folder, dirs_exist_ok=True
             )
 
         writeup_file = osp.join(latex_folder, "template.tex")
