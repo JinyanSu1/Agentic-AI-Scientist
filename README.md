@@ -42,7 +42,10 @@ You also need:
 
 - **[Codex CLI](https://github.com/openai/codex)** on `PATH`, configured with a profile named `fugu` (`~/.codex/fugu.config.toml`, provider `sakana`). The research agent shells out to `codex exec --profile fugu ...` to actually write and run experiment code.
 - **[tectonic](https://tectonic-typesetting.github.io/)** for LaTeX/PDF compilation of the final paper.
+- **poppler** (`pdftotext`, `pdftoppm`) and **chktex**, used by the writeup's review/reflection step to read the compiled PDF back and lint the LaTeX — `conda install -c conda-forge poppler chktex`. Without them the paper still compiles, but the review step is degraded.
 - `pymupdf4llm` (in `requirements.txt`) for reading paper full text.
+
+All of the `PATH` tools above (Codex, tectonic, poppler, chktex) must be resolvable by the process that runs `run_research_loop.py` — e.g. on `~/.local/bin` or the active conda env's `bin`.
 
 ### Environment variables
 
