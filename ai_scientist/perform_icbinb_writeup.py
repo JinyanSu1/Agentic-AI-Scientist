@@ -310,8 +310,9 @@ def get_reflection_page_info(reflection_pdf, page_limit):
             reflection_page_info = (
                 f"\nCurrently, 'References' begins on page {info['ref_page']}, approximately on line {info['ref_line']}. "
                 f"The main text (before the references) uses {info['used_lines']} lines, leaving {info['available']} lines available out of the allowed {info['allowed_lines']} lines (which corresponds to {page_limit} pages). "
-                f"DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT. You can add up to {info['available']} lines if needed, "
-                f"but papers often look more professional if the main text is just under {page_limit} pages in length.\n"
+                f"DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT, but you SHOULD fill close to it: "
+                f"you have about {info['available']} lines of room left, so aim to use most of it -- expand the analysis, "
+                f"add detail, or promote important results from the appendix rather than leaving the paper short.\n"
             )
         else:
             # Fallback in case the info dictionary doesn't contain 'excess' or 'available'
@@ -543,6 +544,8 @@ writeup_system_message_template = """You are an ambitious AI researcher who is l
 You must accurately represent the results of the experiments. Positive, negative, or inconclusive findings are all valid as long as they are reported honestly and the evidence supports them.
 The main paper is limited to {page_limit} pages in the two-column ACL format, not counting references and appendix. In general, try to use the available space and include all relevant information.
 DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT.
+AIM TO FILL CLOSE TO {page_limit} PAGES of substantive main text -- do not submit a short paper. If you are well under the limit, expand the analysis, add detail, or promote important results from the appendix.
+The appendix is NOT page-limited, and a strong full-length paper has a substantial one. Include an EXTENSIVE appendix: full experimental details and setup, all hyperparameters and configurations, complete result tables (including per-seed and per-setting numbers), additional analyses and ablations, and any figures/tables moved out of the main text.
 MINIMIZE THE USAGE OF ITEMIZE OR ENUMERATE. ONLY USE THEM IF THEY ARE ABSOLUTELY NECESSARY AND CONTAIN SUBSTANTIAL INFORMATION.
 Ensure that the tables and figures are correctly placed in a reasonable location and format.
 
@@ -586,10 +589,11 @@ Here are some tips for each section of the paper:
   - Summarize the main lessons learned or contributions.
   - Suggest next steps or future directions, highlighting how these insights can help the community avoid or overcome similar issues.
 
-- **Appendix**:
-  - Place for supplementary material that did not fit in the main paper.
-  - Add more information and details (hyperparameters, algorithms, etc.) in the supplementary material.
-  - Add more plots and tables in the supplementary material. Make sure that this information is not already covered in the main paper.
+- **Appendix** (make this substantial -- it is not page-limited):
+  - Full experimental setup and reproducibility details: datasets/splits, model configs, all hyperparameters, compute, and the exact procedure.
+  - Complete result tables, including per-seed and per-setting numbers, variance/confidence intervals, and any secondary metrics.
+  - Additional analyses, ablations, and robustness/sanity checks that did not fit in the main text.
+  - More plots and tables. Make sure this information is not already covered in the main paper.
   - When checking for duplicate figures, be sure to also review their descriptions to catch cases where different figures convey the same information. For example, one figure might present aggregated training accuracy as a single line plot with a shaded standard deviation (e.g., aggregated_training_accuracy.png), while another (per_seed_training_accuracy.png) shows the same data as three separate line plots.
 
 Ensure you are always writing good compilable LaTeX code. Common mistakes that should be fixed include:
@@ -642,6 +646,7 @@ Your current progress on the LaTeX write-up is:
 Produce the final version of the LaTeX manuscript now, ensuring the paper is coherent, concise, and reports results accurately.
 Return the entire file in full, with no unfilled placeholders!
 This must be an acceptable complete LaTeX writeup in the two-column ACL (ARR) format, suitable for an 8-page main-text paper (references and appendix do not count toward the limit).
+Fill close to the full main-text page budget with substantive content, and include a substantial appendix (full experimental details, complete result tables, and additional analyses/ablations).
 Make sure to use the citations from the references.bib file.
 
 Please provide the updated LaTeX code for 'template.tex', wrapped in triple backticks

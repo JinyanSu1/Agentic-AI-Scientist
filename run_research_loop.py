@@ -142,6 +142,18 @@ def _format_prior_handoff(report: Optional[ExperimentReport], n_prior_rounds: in
     return "\n\n".join(parts)
 
 
+DEEPEN_DIRECTIVE = (
+    "An evaluator judged the current results promising enough to write up, but this "
+    "will be a FULL-LENGTH paper, not a short note. Before finalizing, substantially "
+    "DEEPEN the empirical study to full-paper strength: add sensible baselines, "
+    "ablate your key components, run additional settings/models/datasets where "
+    "feasible, add more seeds/replications for the central claims, and include "
+    "robustness and sanity checks. Aim to produce enough substantiated results "
+    "(with tables and figures) to fill a full-length paper with a rich appendix. "
+    "Do NOT just re-report what you already have."
+)
+
+
 def run_development_loop(
     idea: Dict[str, Any],
     loop_dir: str,
@@ -168,6 +180,8 @@ def run_development_loop(
     decision = None
     workdir, report = current_workdir, latest_report
     prev_report = latest_report if have_report_for_round0 else None
+    full_dev_rounds = 0  # rounds where the agent actually ran (pilot reuse doesn't count)
+    pending_deepen = False  # force the next round to deepen after a too-early lock
     for round_idx in range(start_round, args.max_safety_rounds):
         with open(osp.join(loop_dir, "current_idea.json"), "w") as f:
             json.dump(idea, f, indent=2)
@@ -181,12 +195,17 @@ def run_development_loop(
                 [f for f in os.listdir(loop_dir)
                  if f.startswith("round_") and f.endswith("_outcome.json")]
             )
+            prior_ctx = _format_prior_handoff(prev_report, n_prior)
+            if pending_deepen:
+                prior_ctx = (prior_ctx + "\n\n" + DEEPEN_DIRECTIVE).strip()
+                pending_deepen = False
             print(f"\n=== Round {round_idx}: developing '{idea.get('Name')}' in {workdir} ===")
             report = run_research_agent(
                 idea, workdir, max_turns=args.final_max_turns, model=args.model,
                 knowledge_bank_dir=kb_dir, loop_dir=loop_dir, codex_timeout=args.codex_timeout,
-                prior_context=_format_prior_handoff(prev_report, n_prior),
+                prior_context=prior_ctx,
             )
+            full_dev_rounds += 1
 
         verdict = evaluate_experiment(idea, report, model=args.model)
         print(f"Evaluator decision: {verdict.decision}\nReasoning: {verdict.reasoning}")
@@ -200,6 +219,17 @@ def run_development_loop(
 
         prev_report = report
         if verdict.decision == "lock":
+            if full_dev_rounds < args.min_dev_rounds:
+                # Don't lock on a pilot or a too-shallow study: force at least
+                # min_dev_rounds full development rounds first, deepening the
+                # experiments (don't revise the idea -- keep it, add more evidence).
+                print(
+                    f"Evaluator would lock, but only {full_dev_rounds} full development "
+                    f"round(s) have run (min {args.min_dev_rounds}); running another round "
+                    "to deepen the study before writing up."
+                )
+                pending_deepen = True
+                continue
             research_wiki.add_entry(idea, "locked", verdict.reasoning, args.wiki_path)
             decision = "lock"
             break
@@ -350,6 +380,14 @@ def main():
         default=8,
         help="Hard cap on idea<->experiment development rounds, in case the "
         "evaluator never locks.",
+    )
+    parser.add_argument(
+        "--min-dev-rounds",
+        type=int,
+        default=1,
+        help="Minimum number of full development rounds (the pilot does NOT count) "
+        "before a 'lock' is honored. Prevents locking on the cheap pilot or a "
+        "too-shallow study; a premature lock triggers another deepening round.",
     )
     parser.add_argument(
         "--max-novelty-retries",

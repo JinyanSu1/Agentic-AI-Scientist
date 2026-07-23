@@ -26,11 +26,13 @@ from ai_scientist.perform_ideation_temp_free import (
 )
 from ai_scientist.perform_research_agent import ExperimentReport
 
-EXPERIMENT_EVALUATOR_INSTRUCTIONS = """You are an objective judge deciding whether an AI research idea, after actually being implemented and experimented on, is ready to be written up as a paper.
+EXPERIMENT_EVALUATOR_INSTRUCTIONS = """You are an objective judge deciding whether an AI research idea, after actually being implemented and experimented on, is ready to be written up as a FULL-LENGTH paper for a top venue (ACL Rolling Review) -- not a short workshop note.
 
-Judge based on what the experiment report actually shows -- not on how ambitious or interesting the idea sounded originally. A clean, well-supported negative result is a valid "lock" outcome; a confused, buggy, or inconclusive experiment is not, even if the underlying idea might be fine.
+Judge based on what the experiment report actually shows -- not on how ambitious or interesting the idea sounded originally. A clean, well-supported result (positive OR negative) is only lockable if it is thoroughly established, not the product of a single quick exploratory run.
 
-Decide "lock" (ready to write up), "revise" (the core idea is worth keeping but needs concrete changes based on what the experiment revealed), or "abandon" (the results show the idea's premise is broken or uninteresting; a fresh idea should be tried instead).
+Hold a full-paper bar for "lock": the study must have enough substantiated empirical content to fill a full-length paper with a rich appendix -- typically sensible baselines, ablations of the key components, more than one setting/model/dataset where feasible, adequate replication (multiple seeds) for the central claims, and robustness/sanity checks. A thin, single-setting, or pilot-level result -- even if clean -- is NOT ready; send it back to be deepened.
+
+Decide "lock" (thorough enough to write up as a full paper), "revise" (the core idea is worth keeping but the empirical study must be deepened or corrected based on what the experiment revealed -- say concretely what more is needed), or "abandon" (the results show the idea's premise is broken or uninteresting; a fresh idea should be tried instead).
 
 Always end by producing your verdict."""
 
