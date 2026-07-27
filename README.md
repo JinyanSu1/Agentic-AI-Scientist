@@ -8,6 +8,10 @@ Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist
 > **⚠️ Caution — this executes LLM-written code.**
 > The research agent delegates to its coding worker running fully unattended — Codex with `--dangerously-bypass-approvals-and-sandbox`, or Claude Code with `--dangerously-skip-permissions` — which will write and run arbitrary code and shell commands in its working directory. Run it only inside an isolated environment (e.g. a dedicated SLURM allocation or container) that you are willing to treat as the security boundary. Use at your own discretion.
 
+## Example output
+
+[`examples/AddressOnlyKV`](examples/AddressOnlyKV) is one complete, unedited run: a compiled paper, the idea as the ideation debate wrote it, and the pipeline's own review — including that review's `Reject` verdict. We're showing it warts and all on purpose: this pipeline reports negative results and honest self-critique rather than only positive ones, and a real example demonstrates that better than a feature list does.
+
 ## How it works
 
 The whole loop is orchestrated by [`run_research_loop.py`](run_research_loop.py):
