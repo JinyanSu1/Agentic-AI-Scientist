@@ -450,9 +450,58 @@ def main():
         loop_dir = args.resume_loop_dir
         with open(osp.join(loop_dir, "current_idea.json")) as f:
             idea = json.load(f)
-        start_round = len(
-            [f for f in os.listdir(loop_dir) if f.startswith("round_") and f.endswith("_outcome.json")]
+
+        # A prior invocation may have already finished this loop -- don't
+        # silently kick off another (expensive) development round or a
+        # duplicate writeup in that case. "Finished" means a final_* dir with
+        # an actual compiled PDF; a final_* dir without one is a writeup that
+        # crashed mid-way, which we still want to retry below.
+        finished_final_dirs = [
+            d for d in os.listdir(loop_dir)
+            if d.startswith("final_") and osp.isdir(osp.join(loop_dir, d))
+            and any(f.endswith(".pdf") for f in os.listdir(osp.join(loop_dir, d)))
+        ]
+        if finished_final_dirs:
+            print(
+                f"{loop_dir} already has a completed writeup "
+                f"({', '.join(sorted(finished_final_dirs))}); nothing to resume. "
+                "Move/remove it first if you intend to redo the writeup."
+            )
+            return
+
+        outcome_files = sorted(
+            f for f in os.listdir(loop_dir)
+            if f.startswith("round_") and f.endswith("_outcome.json")
         )
+        start_round = len(outcome_files)
+        if outcome_files:
+            with open(osp.join(loop_dir, outcome_files[-1])) as f:
+                last_outcome = json.load(f)
+            last_decision = last_outcome.get("verdict", {}).get("decision")
+            if last_decision == "abandon":
+                print(
+                    f"{loop_dir}'s last recorded round was abandoned; nothing to "
+                    "resume (start a fresh idea/loop instead)."
+                )
+                return
+            if last_decision == "lock":
+                # NOTE: this assumes the recorded lock was a real break, not a
+                # pending-deepen continue (evaluator locked before
+                # --min-dev-rounds was met, forcing another round without
+                # revising the idea) -- pending_deepen isn't persisted across
+                # resumes, so an interruption inside that specific extra round
+                # would incorrectly skip straight to writeup here instead of
+                # deepening further. Only possible with --min-dev-rounds > 1.
+                print(
+                    f"{loop_dir}'s last recorded round already locked; skipping "
+                    "straight to writeup instead of starting another development round."
+                )
+                report = ExperimentReport(**last_outcome["report"])
+                workdir = osp.join(loop_dir, f"experiment_{idea.get('Name', 'idea')}")
+                idea_dir = run_writeup(idea, report, workdir, loop_dir, args, decision="lock")
+                print(f"Done. Final results in {idea_dir}")
+                return
+
         print(f"Resuming {loop_dir} from round {start_round} with idea '{idea.get('Name')}'")
         run_development_loop(idea, loop_dir, args, start_round=start_round)
         return
