@@ -1,0 +1,40 @@
+{
+    "Summary": "The paper poses a specific deployment question: outside forced prefix/recent windows, do modern instruction-tuned RoPE decoders contain a distributed, byte-substantial class of KV-cache entries whose exact keys remain useful after their values are zeroed (an 'address-only' state between FULL and DROP)? The authors build a preregistered, optimizer-robust audit consisting of exact ternary/binary coalition enumeration over GQA groups (n=8 eligible entries), a WO-projected reconstruction objective, an additive surrogate allocator, and multistart nonlinear local search validated against exhaustive enumeration. Across Qwen2.5-3B, Qwen2.5-7B, and Mistral-7B, three PG-19 documents, and 2K/4K/8K endpoints, the aggregate result is a clean negative: only 1.34% ADDRESS entries and 0.67% corrected byte saving, failing preregistered 20%/15% gates on every slice. Pointwise exceptions exist (50 gate-passing rows over 26/440 locations, including a reproducible Mistral layer-0 pocket), an exact-layer-matched permutation test rejects the 'sink-adjacent' explanation, and RULER TOST equivalence between address-only and matched-byte binary caches holds for all three models. A verifier is released.",
+    "Strengths": [
+        "Strong methodological rigor: preregistration, exhaustive coalition enumeration cross-checked against nonlinear search, confounder-matched (exact-layer) permutation testing, and TOST equivalence testing rather than misinterpreting nonsignificant difference tests.",
+        "Honest and balanced reporting: the authors explicitly avoid overclaiming universal absence, characterizing (rather than hiding) sparse reproducible exceptions such as the Mistral layer-0 pocket.",
+        "The three-state FULL/ADDRESS/DROP framing with a GQA-aware byte accountant and WO-projected error is a reasonable and clean formalization of the question.",
+        "Release of an independent verifier that recomputes coalition losses, gate decisions, and statistical tests supports reproducibility.",
+        "The paper articulates useful methodological pitfalls (weak-allocator artifacts, layer confounding in sink attribution, difference-vs-equivalence)."
+    ],
+    "Weaknesses": [
+        "Limited generalizability: only 3 models from 2 families, only 3 PG-19 documents (the authors state 6-8 were planned), and contexts capped at 8K. This prevents any population-level or long-context conclusions, which the authors acknowledge.",
+        "The exact-enumeration audit operates on groups of only n=8 eligible entries. The 'optimizer-robust'/'exact optimum' guarantees hold only within these small groups and do not reflect realistic cache-length coalition decisions, weakening the transfer of conclusions to actual deployment caches.",
+        "The core audit relies on a WO-projected reconstruction surrogate rather than end-to-end generation; downstream generation (RULER) is used only as a limited-scale check.",
+        "Low significance: the refuted hypothesis is not strongly established in prior literature, and the practical recommendation (prefer binary eviction/quantization/low-rank) largely confirms existing practice.",
+        "Presentation is extremely dense and jargon-heavy, with idiosyncratic terminology that makes the paper hard to follow even for an expert; key design choices are hard to extract.",
+        "The distinction between 'address-only class' as claimed here versus what related work (e.g., VECTOR, key/value asymmetry methods) actually proposes is somewhat of a strawman, limiting the impact of a negative result against it."
+    ],
+    "Originality": 3,
+    "Quality": 2,
+    "Clarity": 2,
+    "Significance": 2,
+    "Questions": [
+        "How do the conclusions change if coalition optimization is performed over realistic cache-length windows rather than fixed groups of n=8? Is there evidence the n=8 grouping does not systematically suppress ADDRESS prevalence?",
+        "Given only 3 documents were completed, how robust is the document-level stability claim, and can you bound population-level uncertainty in any principled way?",
+        "Why rely primarily on a WO-projected reconstruction surrogate rather than end-to-end generation for the core audit? How sensitive are ADDRESS-prevalence estimates to this choice?",
+        "How does the refuted 'address-only class' precisely differ from what asymmetry/routing methods (e.g., VECTOR, sub-token routing) claim, and would those methods actually predict a distributed address-only class?",
+        "Would results differ qualitatively for architectures beyond standard RoPE decoders, or at 16K+ contexts where cache pressure is more severe?"
+    ],
+    "Limitations": [
+        "The authors are commendably explicit about limitations: bounded negative rather than pointwise absence, only 3 documents/3 models/2 families, contexts capped at 8K, exact enumeration limited to groups of 8, and SubToken-min being implementation-specific. However, the n=8 enumeration constraint and the reconstruction-surrogate objective are more central threats to the main conclusion than the framing suggests.",
+        "No significant negative societal impact concerns; the work is an efficiency/measurement study."
+    ],
+    "Ethical Concerns": false,
+    "Soundness": 2,
+    "Presentation": 2,
+    "Contribution": 2,
+    "Overall": 4,
+    "Confidence": 3,
+    "Decision": "Reject"
+}
