@@ -203,7 +203,7 @@ def run_development_loop(
             report = run_research_agent(
                 idea, workdir, max_turns=args.final_max_turns, model=args.model,
                 knowledge_bank_dir=kb_dir, loop_dir=loop_dir, codex_timeout=args.codex_timeout,
-                prior_context=prior_ctx,
+                prior_context=prior_ctx, worker=args.worker, codex_profile=args.codex_profile,
             )
             full_dev_rounds += 1
 
@@ -293,7 +293,7 @@ def run_writeup(
 ) -> str:
     """Bridge our ExperimentReport into the existing citation/writeup/tectonic
     pipeline: build an idea_dir with idea.json/idea.md/experiment_report.json,
-    pull over any plots the Research Agent's Codex calls produced, then run the
+    pull over any plots the Research Agent's coding-worker calls produced, then run the
     same gather_citations -> perform_writeup -> review sequence the old BFTS
     pipeline used at the end."""
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -411,8 +411,27 @@ def main():
         "--codex-timeout",
         type=int,
         default=3600,
-        help="Wall-clock timeout (seconds) for a single Codex sub-task. Raise it if "
-        "individual experiment steps (e.g. real training) legitimately need longer.",
+        help="Wall-clock timeout (seconds) for a single coding-worker sub-task. Raise it "
+        "if individual experiment steps (e.g. real training) legitimately need longer.",
+    )
+    parser.add_argument(
+        "--worker",
+        type=str,
+        choices=["codex", "claude-code"],
+        default="codex",
+        help="Which CLI coding agent actually writes/runs/debugs experiment code. "
+        "'codex' shells out to Codex CLI (see --codex-profile); 'claude-code' shells "
+        "out to the Claude Code CLI (`claude`), which must be on PATH and separately "
+        "authenticated.",
+    )
+    parser.add_argument(
+        "--codex-profile",
+        type=str,
+        default="fugu",
+        help="Codex CLI profile passed as `codex exec --profile <name>` when --worker "
+        "codex is used. Pass an empty string to use Codex's own default profile/login "
+        "(e.g. a regular OpenAI account) instead of a named profile. Ignored for "
+        "--worker claude-code.",
     )
     parser.add_argument(
         "--resume-loop-dir",
@@ -490,6 +509,7 @@ def main():
             report = run_research_agent(
                 idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model,
                 knowledge_bank_dir=kb_dir, codex_timeout=args.codex_timeout,
+                worker=args.worker, codex_profile=args.codex_profile,
             )
             reports.append(report)
             print(f"Pilot {i} ({idea.get('Name')}): {report.status} -- {report.summary[:300]}")
@@ -554,6 +574,7 @@ def main():
         latest_report = run_research_agent(
             idea, pilot_dir, max_turns=args.pilot_max_turns, model=args.model,
             knowledge_bank_dir=kb_dir, codex_timeout=args.codex_timeout,
+            worker=args.worker, codex_profile=args.codex_profile,
         )
         current_workdir = pilot_dir
         have_report_for_round0 = True

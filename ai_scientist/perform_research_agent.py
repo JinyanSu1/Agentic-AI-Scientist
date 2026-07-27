@@ -4,9 +4,10 @@ lifecycle: implement, run, look at real results, and decide what to do next --
 fix a bug, try a baseline, scale up, try an ablation, or stop -- entirely on its
 own judgment, with no fixed stage structure or iteration cap baked in by us.
 
-The actual code-writing/running/debugging is delegated to Codex (a proven
-coding agent) via run_experiment_task; this agent is the "brain" deciding what
-to ask Codex to do and when enough evidence has been gathered.
+The actual code-writing/running/debugging is delegated to a CLI coding worker
+(Codex or Claude Code -- see ai_scientist/tools/coding_worker.py) via
+run_experiment_task; this agent is the "brain" deciding what to ask the worker
+to do and when enough evidence has been gathered.
 """
 
 import json
@@ -137,6 +138,8 @@ def run_research_agent(
     prior_context: str = "",
     loop_dir: str = None,
     codex_timeout: int = 3600,
+    worker: str = "codex",
+    codex_profile: str = "fugu",
 ) -> ExperimentReport:
     """Run one development round. The agent works free-form (no output_type): its
     final message is a plain-text summary, NOT the structured report. The
@@ -166,6 +169,7 @@ def run_research_agent(
     ctx = ResearchContext(
         workdir=workdir, model=model, knowledge_bank_dir=knowledge_bank_dir,
         loop_dir=loop_dir, codex_timeout=codex_timeout,
+        worker=worker, codex_profile=codex_profile,
     )
     kickoff = "Begin implementing and running this research idea."
     if prior_context:

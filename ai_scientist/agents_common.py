@@ -29,8 +29,8 @@ from ai_scientist.tools.codex_worker import (
     describe_plot,
     list_workdir_files,
     read_text_file,
-    run_codex_task,
 )
+from ai_scientist.tools.coding_worker import run_coding_task
 
 
 def configure_fugu_as_default(model: str = "fugu") -> None:
@@ -103,10 +103,16 @@ class ResearchContext:
     # development rounds, so recall_prior_rounds can retrieve their details on
     # demand instead of us stuffing the whole history into the kickoff prompt.
     loop_dir: Optional[str] = None
-    # Wall-clock timeout (seconds) for a single Codex sub-task. Configurable
+    # Wall-clock timeout (seconds) for a single coding-worker sub-task. Configurable
     # because a genuinely heavy sub-task (e.g. real training) can need more than
     # the 1h default.
     codex_timeout: int = 3600
+    # Which CLI coding agent run_experiment_task delegates to: "codex" or
+    # "claude-code" (see ai_scientist/tools/coding_worker.py).
+    worker: str = "codex"
+    # Codex CLI profile to use when worker == "codex" (None/"" for Codex's own
+    # default profile/login instead of a named profile).
+    codex_profile: Optional[str] = "fugu"
 
 
 @function_tool
@@ -157,7 +163,13 @@ def run_experiment_task(ctx: RunContextWrapper[ResearchContext], task: str) -> s
     implement, what data/model to use, what to measure, what file(s) to save
     results/plots to. Codex has no memory of previous calls -- restate any
     context it needs (e.g. what to fix if the last attempt failed)."""
-    return run_codex_task(task, ctx.context.workdir, timeout=ctx.context.codex_timeout)
+    return run_coding_task(
+        task,
+        ctx.context.workdir,
+        worker=ctx.context.worker,
+        timeout=ctx.context.codex_timeout,
+        codex_profile=ctx.context.codex_profile,
+    )
 
 
 @function_tool

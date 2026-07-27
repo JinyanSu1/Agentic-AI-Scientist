@@ -2,11 +2,12 @@
 coding agent) instead of hand-rolling a code-gen/execution/debugging loop. The
 Research Agent decides *what* to do next; Codex actually does it.
 
-Requires the "fugu" Codex profile (~/.codex/fugu.config.toml, provider "sakana")
-and runs with --dangerously-bypass-approvals-and-sandbox: Codex's own bubblewrap
+Runs with --dangerously-bypass-approvals-and-sandbox: Codex's own bubblewrap
 sandboxing doesn't work in this cluster environment (nested user/network
 namespaces aren't permitted), so it relies on the SLURM allocation itself as the
-isolation boundary instead.
+isolation boundary instead. `profile` selects the Codex CLI profile (e.g. the
+internal "fugu" profile routed through the Sakana gateway, or None/"" to use
+Codex's own default profile/login against the regular OpenAI API).
 """
 
 import base64
@@ -17,16 +18,17 @@ import time
 from typing import Optional
 
 
-def run_codex_task(task: str, workdir: str, timeout: int = 3600) -> str:
+def run_codex_task(task: str, workdir: str, timeout: int = 3600, profile: Optional[str] = "fugu") -> str:
     """Give Codex a concrete coding/experiment task to carry out in workdir
     (write code, run it, fix errors, report results). Returns Codex's final
     report message. Codex can read/write any file under workdir and run shell
     commands there; give it a self-contained, specific task description."""
     os.makedirs(workdir, exist_ok=True)
     last_message_path = osp.join(workdir, f"_codex_last_message_{int(time.time() * 1000)}.txt")
-    cmd = [
-        "codex", "exec",
-        "--profile", "fugu",
+    cmd = ["codex", "exec"]
+    if profile:
+        cmd += ["--profile", profile]
+    cmd += [
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "-C", workdir,
