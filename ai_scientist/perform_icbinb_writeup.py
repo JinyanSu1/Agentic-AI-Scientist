@@ -21,6 +21,7 @@ from ai_scientist.utils.token_tracker import track_token_usage
 
 from ai_scientist.tools.paper_search import search_for_papers
 from ai_scientist.tools.knowledge_bank import get_paper_knowledge
+from ai_scientist.tools.paper_fulltext import fetch_fulltext
 
 from ai_scientist.perform_vlm_review import (
     generate_vlm_img_review,
@@ -552,7 +553,7 @@ Ensure that the tables and figures are correctly placed in a reasonable location
 - Do not change the overall style which is mandated by the conference. Keep to the current method of including the references.bib file.
 - Do not remove the \\graphicspath directive or no figures will be found.
 - Do not add `Acknowledgements` section to the paper.
-
+{style_notes}
 Here are some tips for each section of the paper:
 
 - **Title**:
@@ -771,6 +772,126 @@ In <JSON>, respond with a single field "Papers": a list of search-friendly strin
     with open(seed_cache_path, "w") as f:
         f.write(seed_context)
     return seed_context
+
+
+STYLE_REFERENCE_EXTRACT_PROMPT = """Here is a research idea we are about to write up as a paper:
+```markdown
+{idea_text}
+```
+
+Name up to {max_papers} well-known, well-written papers ACCEPTED at a top NLP/ML venue
+(ACL/EMNLP/NAACL/NeurIPS/ICML/ICLR) that are close enough in topic/subfield to this idea
+that their prose conventions (not necessarily their specific method) would be a good model
+to emulate when writing this paper up. Prefer papers known for being clearly and
+professionally written, not just influential.
+
+Respond in the following format:
+
+THOUGHT:
+<THOUGHT>
+
+RESPONSE:
+```json
+<JSON>
+```
+
+In <JSON>, respond with a single field "Papers": a list of search-friendly strings
+(e.g. "Attention Is All You Need"), one per paper, most relevant first."""
+
+STYLE_REFERENCE_DIGEST_SYSTEM_MESSAGE = (
+    "You are an experienced NLP/ML researcher and reviewer, reading a well-written "
+    "accepted paper specifically to describe its writing conventions for someone "
+    "about to draft their own paper in the same subfield."
+)
+
+STYLE_REFERENCE_DIGEST_PROMPT = """Paper title: {title}
+
+Content (full text if available, otherwise just the abstract):
+```
+{content}
+```
+
+Describe this paper's WRITING CONVENTIONS ONLY -- not its content, method, or findings --
+so a writer can match its register and structure without copying it. Cover, concretely
+wherever the content supports it:
+1. How the abstract and introduction open (first-sentence patterns, how quickly they state
+   the problem/contribution).
+2. How contributions are phrased/listed (or not) at the end of the introduction.
+3. How Related Work is structured and how it compares to prior work (contrastive framing,
+   paragraph-per-theme vs paragraph-per-paper, etc.).
+4. Sentence-level register: typical sentence length, level of hedging, use of first person,
+   how quantitative results are described in prose.
+5. Any other structural or stylistic conventions worth imitating.
+
+Do NOT quote more than a short phrase (a few words) verbatim at a time, and do not
+summarize the paper's actual scientific content or findings -- only its writing
+conventions. Be concrete and specific, not generic ("clear and concise" is not useful;
+give the actual patterns)."""
+
+
+def gather_style_reference(base_folder, idea_text, model, max_papers=2):
+    """Read 1-2 real, accepted papers in the same subfield specifically for their
+    WRITING conventions (structure, register, phrasing patterns) -- not their
+    content -- so the writeup LLM has something concrete to calibrate its prose
+    against instead of drifting into generic "AI-written paper" phrasing.
+
+    Deliberately independent of get_paper_knowledge/the knowledge bank: that cache
+    answers a content question ("what does this paper say, for planning our own
+    work") keyed by title, while this answers a style question for a paper chosen
+    for how it's written rather than for topical relevance. Cached to its own file
+    to survive resumes/retries within one writeup."""
+    cache_path = osp.join(base_folder, "style_reference.txt")
+    if osp.exists(cache_path):
+        with open(cache_path, "r") as f:
+            return f.read()
+
+    style_notes = ""
+    try:
+        client, client_model = create_client(model)
+        text, _ = get_response_from_llm(
+            prompt=STYLE_REFERENCE_EXTRACT_PROMPT.format(
+                idea_text=idea_text, max_papers=max_papers
+            ),
+            client=client,
+            model=client_model,
+            system_message="You are an AI researcher choosing well-written papers to model a writeup's style on.",
+            print_debug=False,
+        )
+        json_output = extract_json_between_markers(text)
+        paper_queries = (json_output or {}).get("Papers", [])[:max_papers]
+
+        digests = []
+        for query in paper_queries:
+            try:
+                papers = search_for_papers(query, result_limit=1)
+            except Exception as e:
+                print(f"Style-reference paper search failed for {query!r}: {e}")
+                continue
+            if not papers:
+                continue
+            paper = papers[0]
+            title = paper.get("title", query)
+            content = fetch_fulltext(paper.get("pdf_url")) or paper.get(
+                "abstract", "No abstract available."
+            )
+            digest_text, _ = get_response_from_llm(
+                prompt=STYLE_REFERENCE_DIGEST_PROMPT.format(title=title, content=content),
+                client=client,
+                model=client_model,
+                system_message=STYLE_REFERENCE_DIGEST_SYSTEM_MESSAGE,
+                print_debug=False,
+            )
+            digests.append(f"### Writing conventions from {title!r}\n{digest_text.strip()}")
+
+        style_notes = "\n\n".join(digests)
+    except Exception:
+        print("EXCEPTION in gather_style_reference:")
+        print(traceback.format_exc())
+        style_notes = ""
+
+    with open(cache_path, "w") as f:
+        f.write(style_notes)
+    return style_notes
 
 
 def gather_citations(
@@ -1010,8 +1131,16 @@ def perform_writeup(
             print(traceback.format_exc())
             plot_descriptions_str = "No descriptions available."
 
+        style_notes = gather_style_reference(base_folder, idea_text, small_model)
+        style_block = (
+            "\nWRITING STYLE CALIBRATION -- notes on writing conventions (not content) "
+            "from real accepted papers in this subfield, gathered so you match their "
+            "register and structure instead of a generic \"AI-written paper\" style:\n"
+            f"{style_notes}\n"
+            if style_notes else ""
+        )
         big_model_system_message = writeup_system_message_template.format(
-            page_limit=page_limit
+            page_limit=page_limit, style_notes=style_block
         )
         big_client, big_client_model = create_client(big_model)
         with open(writeup_file, "r") as f:
