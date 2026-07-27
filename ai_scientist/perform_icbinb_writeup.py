@@ -21,6 +21,7 @@ from ai_scientist.utils.token_tracker import track_token_usage
 
 from ai_scientist.tools.paper_search import search_for_papers
 from ai_scientist.tools.knowledge_bank import get_paper_knowledge
+from ai_scientist.tools.paper_fulltext import fetch_fulltext
 
 from ai_scientist.perform_vlm_review import (
     generate_vlm_img_review,
@@ -229,7 +230,7 @@ def extract_page_line_counts(pdf_file, first_page, last_page):
     return page_lines
 
 
-def check_page_limit(pdf_file, page_limit=4, timeout=30):
+def check_page_limit(pdf_file, page_limit=8, timeout=30):
     """
     Compile the LaTeX project in a temporary folder, then determine where the
     "References" section begins using cleaned text extraction. Next, count the
@@ -310,8 +311,9 @@ def get_reflection_page_info(reflection_pdf, page_limit):
             reflection_page_info = (
                 f"\nCurrently, 'References' begins on page {info['ref_page']}, approximately on line {info['ref_line']}. "
                 f"The main text (before the references) uses {info['used_lines']} lines, leaving {info['available']} lines available out of the allowed {info['allowed_lines']} lines (which corresponds to {page_limit} pages). "
-                f"DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT. You can add up to {info['available']} lines if needed, "
-                f"but papers often look more professional if the main text is just under {page_limit} pages in length.\n"
+                f"DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT, but you SHOULD fill close to it: "
+                f"you have about {info['available']} lines of room left, so aim to use most of it -- expand the analysis, "
+                f"add detail, or promote important results from the appendix rather than leaving the paper short.\n"
             )
         else:
             # Fallback in case the info dictionary doesn't contain 'excess' or 'available'
@@ -333,7 +335,7 @@ def get_citation_addition(
 ):
     report, citations = context
     msg_history = []
-    citation_system_msg_template = """You are an ambitious AI researcher who is looking to publish a paper to a workshop at ICLR 2025 that explores real-world pitfalls, failures, and challenges in deep learning.
+    citation_system_msg_template = """You are an ambitious AI researcher who is looking to publish a full paper at a top-tier NLP/ML venue through ACL Rolling Review (ARR).
 You have already completed the experiments and now you are looking to collect citations to related papers.
 This phase focuses on collecting references and annotating them to be integrated later.
 Collected citations will be added to a references.bib file.
@@ -539,18 +541,19 @@ This JSON will be automatically parsed, so ensure the format is precise."""
     return references_prompt, False
 
 
-writeup_system_message_template = """You are an ambitious AI researcher who is looking to publish a paper to the "I Can't Believe It's Not Better" (ICBINB) Workshop at ICLR 2025.
-This workshop aims to highlight real-world pitfalls, challenges, and negative or inconclusive results in deep learning, encouraging open discussion.
-You must accurately represent the results of the experiments.
-The main paper is limited to {page_limit} pages in single-column format, not counting references. In general, try to use the available space and include all relevant information.
+writeup_system_message_template = """You are an ambitious AI researcher who is looking to publish a full paper at a top-tier NLP/ML venue through ACL Rolling Review (ARR), using the official ACL (acl.sty) LaTeX style.
+You must accurately represent the results of the experiments. Positive, negative, or inconclusive findings are all valid as long as they are reported honestly and the evidence supports them.
+The main paper is limited to {page_limit} pages in the two-column ACL format, not counting references and appendix. In general, try to use the available space and include all relevant information.
 DO NOT USE MORE THAN {page_limit} PAGES FOR THE MAIN TEXT.
+AIM TO FILL CLOSE TO {page_limit} PAGES of substantive main text -- do not submit a short paper. If you are well under the limit, expand the analysis, add detail, or promote important results from the appendix.
+The appendix is NOT page-limited, and a strong full-length paper has a substantial one. Include an EXTENSIVE appendix: full experimental details and setup, all hyperparameters and configurations, complete result tables (including per-seed and per-setting numbers), additional analyses and ablations, and any figures/tables moved out of the main text.
 MINIMIZE THE USAGE OF ITEMIZE OR ENUMERATE. ONLY USE THEM IF THEY ARE ABSOLUTELY NECESSARY AND CONTAIN SUBSTANTIAL INFORMATION.
 Ensure that the tables and figures are correctly placed in a reasonable location and format.
 
 - Do not change the overall style which is mandated by the conference. Keep to the current method of including the references.bib file.
 - Do not remove the \\graphicspath directive or no figures will be found.
 - Do not add `Acknowledgements` section to the paper.
-
+{style_notes}
 Here are some tips for each section of the paper:
 
 - **Title**:
@@ -580,17 +583,18 @@ Here are some tips for each section of the paper:
 
 - **Experiments** (if applicable):
   - Present results truthfully according to the data you have. Negative, unexpected, or inconclusive findings are valid contributions for this workshop.
-  - Include figures, tables, or real-world examples that illustrate the pitfalls.
-  - Include up to 4 figures in the main text. All other figures should be in the appendix.
+  - Include figures, tables, or examples that illustrate the findings.
+  - Include up to 6 figures in the main text. All other figures should be in the appendix.
 
 - **Conclusion**:
   - Summarize the main lessons learned or contributions.
   - Suggest next steps or future directions, highlighting how these insights can help the community avoid or overcome similar issues.
 
-- **Appendix**:
-  - Place for supplementary material that did not fit in the main paper.
-  - Add more information and details (hyperparameters, algorithms, etc.) in the supplementary material.
-  - Add more plots and tables in the supplementary material. Make sure that this information is not already covered in the main paper.
+- **Appendix** (make this substantial -- it is not page-limited):
+  - Full experimental setup and reproducibility details: datasets/splits, model configs, all hyperparameters, compute, and the exact procedure.
+  - Complete result tables, including per-seed and per-setting numbers, variance/confidence intervals, and any secondary metrics.
+  - Additional analyses, ablations, and robustness/sanity checks that did not fit in the main text.
+  - More plots and tables. Make sure this information is not already covered in the main paper.
   - When checking for duplicate figures, be sure to also review their descriptions to catch cases where different figures convey the same information. For example, one figure might present aggregated training accuracy as a single line plot with a shaded standard deviation (e.g., aggregated_training_accuracy.png), while another (per_seed_training_accuracy.png) shows the same data as three separate line plots.
 
 Ensure you are always writing good compilable LaTeX code. Common mistakes that should be fixed include:
@@ -642,7 +646,8 @@ Your current progress on the LaTeX write-up is:
 
 Produce the final version of the LaTeX manuscript now, ensuring the paper is coherent, concise, and reports results accurately.
 Return the entire file in full, with no unfilled placeholders!
-This must be an acceptable complete LaTeX writeup, suitable for a 4-page single-column workshop paper.
+This must be an acceptable complete LaTeX writeup in the two-column ACL (ARR) format, suitable for an 8-page main-text paper (references and appendix do not count toward the limit).
+Fill close to the full main-text page budget with substantive content, and include a substantial appendix (full experimental details, complete result tables, and additional analyses/ablations).
 Make sure to use the citations from the references.bib file.
 
 Please provide the updated LaTeX code for 'template.tex', wrapped in triple backticks
@@ -767,6 +772,126 @@ In <JSON>, respond with a single field "Papers": a list of search-friendly strin
     with open(seed_cache_path, "w") as f:
         f.write(seed_context)
     return seed_context
+
+
+STYLE_REFERENCE_EXTRACT_PROMPT = """Here is a research idea we are about to write up as a paper:
+```markdown
+{idea_text}
+```
+
+Name up to {max_papers} well-known, well-written papers ACCEPTED at a top NLP/ML venue
+(ACL/EMNLP/NAACL/NeurIPS/ICML/ICLR) that are close enough in topic/subfield to this idea
+that their prose conventions (not necessarily their specific method) would be a good model
+to emulate when writing this paper up. Prefer papers known for being clearly and
+professionally written, not just influential.
+
+Respond in the following format:
+
+THOUGHT:
+<THOUGHT>
+
+RESPONSE:
+```json
+<JSON>
+```
+
+In <JSON>, respond with a single field "Papers": a list of search-friendly strings
+(e.g. "Attention Is All You Need"), one per paper, most relevant first."""
+
+STYLE_REFERENCE_DIGEST_SYSTEM_MESSAGE = (
+    "You are an experienced NLP/ML researcher and reviewer, reading a well-written "
+    "accepted paper specifically to describe its writing conventions for someone "
+    "about to draft their own paper in the same subfield."
+)
+
+STYLE_REFERENCE_DIGEST_PROMPT = """Paper title: {title}
+
+Content (full text if available, otherwise just the abstract):
+```
+{content}
+```
+
+Describe this paper's WRITING CONVENTIONS ONLY -- not its content, method, or findings --
+so a writer can match its register and structure without copying it. Cover, concretely
+wherever the content supports it:
+1. How the abstract and introduction open (first-sentence patterns, how quickly they state
+   the problem/contribution).
+2. How contributions are phrased/listed (or not) at the end of the introduction.
+3. How Related Work is structured and how it compares to prior work (contrastive framing,
+   paragraph-per-theme vs paragraph-per-paper, etc.).
+4. Sentence-level register: typical sentence length, level of hedging, use of first person,
+   how quantitative results are described in prose.
+5. Any other structural or stylistic conventions worth imitating.
+
+Do NOT quote more than a short phrase (a few words) verbatim at a time, and do not
+summarize the paper's actual scientific content or findings -- only its writing
+conventions. Be concrete and specific, not generic ("clear and concise" is not useful;
+give the actual patterns)."""
+
+
+def gather_style_reference(base_folder, idea_text, model, max_papers=2):
+    """Read 1-2 real, accepted papers in the same subfield specifically for their
+    WRITING conventions (structure, register, phrasing patterns) -- not their
+    content -- so the writeup LLM has something concrete to calibrate its prose
+    against instead of drifting into generic "AI-written paper" phrasing.
+
+    Deliberately independent of get_paper_knowledge/the knowledge bank: that cache
+    answers a content question ("what does this paper say, for planning our own
+    work") keyed by title, while this answers a style question for a paper chosen
+    for how it's written rather than for topical relevance. Cached to its own file
+    to survive resumes/retries within one writeup."""
+    cache_path = osp.join(base_folder, "style_reference.txt")
+    if osp.exists(cache_path):
+        with open(cache_path, "r") as f:
+            return f.read()
+
+    style_notes = ""
+    try:
+        client, client_model = create_client(model)
+        text, _ = get_response_from_llm(
+            prompt=STYLE_REFERENCE_EXTRACT_PROMPT.format(
+                idea_text=idea_text, max_papers=max_papers
+            ),
+            client=client,
+            model=client_model,
+            system_message="You are an AI researcher choosing well-written papers to model a writeup's style on.",
+            print_debug=False,
+        )
+        json_output = extract_json_between_markers(text)
+        paper_queries = (json_output or {}).get("Papers", [])[:max_papers]
+
+        digests = []
+        for query in paper_queries:
+            try:
+                papers = search_for_papers(query, result_limit=1)
+            except Exception as e:
+                print(f"Style-reference paper search failed for {query!r}: {e}")
+                continue
+            if not papers:
+                continue
+            paper = papers[0]
+            title = paper.get("title", query)
+            content = fetch_fulltext(paper.get("pdf_url")) or paper.get(
+                "abstract", "No abstract available."
+            )
+            digest_text, _ = get_response_from_llm(
+                prompt=STYLE_REFERENCE_DIGEST_PROMPT.format(title=title, content=content),
+                client=client,
+                model=client_model,
+                system_message=STYLE_REFERENCE_DIGEST_SYSTEM_MESSAGE,
+                print_debug=False,
+            )
+            digests.append(f"### Writing conventions from {title!r}\n{digest_text.strip()}")
+
+        style_notes = "\n\n".join(digests)
+    except Exception:
+        print("EXCEPTION in gather_style_reference:")
+        print(traceback.format_exc())
+        style_notes = ""
+
+    with open(cache_path, "w") as f:
+        f.write(style_notes)
+    return style_notes
 
 
 def gather_citations(
@@ -895,7 +1020,7 @@ def perform_writeup(
     small_model="gpt-4o-2024-05-13",
     big_model="o1-2024-12-17",
     n_writeup_reflections=3,
-    page_limit=4,
+    page_limit=8,
 ):
     pdf_file = osp.join(base_folder, f"{osp.basename(base_folder)}.pdf")
     latex_folder = osp.join(base_folder, "latex")
@@ -918,7 +1043,7 @@ def perform_writeup(
         # Prepare a new fresh latex folder
         if not osp.exists(osp.join(latex_folder, "template.tex")):
             shutil.copytree(
-                "ai_scientist/blank_icbinb_latex", latex_folder, dirs_exist_ok=True
+                "ai_scientist/blank_arr_latex", latex_folder, dirs_exist_ok=True
             )
 
         writeup_file = osp.join(latex_folder, "template.tex")
@@ -1006,8 +1131,16 @@ def perform_writeup(
             print(traceback.format_exc())
             plot_descriptions_str = "No descriptions available."
 
+        style_notes = gather_style_reference(base_folder, idea_text, small_model)
+        style_block = (
+            "\nWRITING STYLE CALIBRATION -- notes on writing conventions (not content) "
+            "from real accepted papers in this subfield, gathered so you match their "
+            "register and structure instead of a generic \"AI-written paper\" style:\n"
+            f"{style_notes}\n"
+            if style_notes else ""
+        )
         big_model_system_message = writeup_system_message_template.format(
-            page_limit=page_limit
+            page_limit=page_limit, style_notes=style_block
         )
         big_client, big_client_model = create_client(big_model)
         with open(writeup_file, "r") as f:

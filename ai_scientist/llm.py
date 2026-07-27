@@ -8,7 +8,7 @@ import anthropic
 import backoff
 import openai
 
-MAX_NUM_TOKENS = 32000
+MAX_NUM_TOKENS = 64000
 
 AVAILABLE_LLMS = [
     "claude-3-5-sonnet-20240620",
