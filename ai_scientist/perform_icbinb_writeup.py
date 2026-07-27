@@ -1395,7 +1395,24 @@ USE MINIMAL EDITS TO OPTIMIZE THE PAGE LIMIT USAGE."""
             else:
                 print(f"No changes in reflection page step.")
 
-        return osp.exists(reflection_pdf)
+        if osp.exists(reflection_pdf):
+            return True
+
+        # The final page-limit reflection edit produced LaTeX that didn't compile
+        # (e.g. a malformed \begin{document}) -- rather than discarding the whole
+        # attempt (an earlier reflection round is a complete, valid paper that
+        # already compiled), fall back to the latest reflection PDF that did.
+        for j in range(n_writeup_reflections, 0, -1):
+            earlier_pdf = osp.join(
+                base_folder, f"{osp.basename(base_folder)}_reflection{j}.pdf"
+            )
+            if osp.exists(earlier_pdf):
+                print(
+                    f"Final page-limit reflection failed to compile; falling back to "
+                    f"{osp.basename(earlier_pdf)} (last reflection round that compiled)."
+                )
+                return True
+        return False
 
     except Exception:
         print("EXCEPTION in perform_writeup:")

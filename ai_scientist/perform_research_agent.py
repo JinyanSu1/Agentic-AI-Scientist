@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from ai_scientist.agents_common import (
     ResearchContext,
-    configure_fugu_as_default,
+    configure_model_provider,
     inspect_plot,
     list_experiment_files,
     read_experiment_file,
@@ -149,11 +149,11 @@ def run_research_agent(
     call produces a well-formed one. If the agent hits its turn cap, we synthesize
     from the on-disk evidence alone (no narrative). prior_context is a short handoff
     headline; the full prior history is reachable via recall_prior_rounds."""
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
     agent = Agent(
         name="ResearchAgent",
         instructions=RESEARCH_AGENT_INSTRUCTIONS.format(idea_json=json.dumps(idea, indent=2)),
-        model=model,
+        model=agent_model,
         tools=[
             run_experiment_task,
             list_experiment_files,
@@ -192,4 +192,4 @@ def run_research_agent(
             "the working directory (no final summary was written)."
         )
         narrative = ""
-    return synthesize_report(workdir, idea, model, agent_narrative=narrative)
+    return synthesize_report(workdir, idea, agent_model, agent_narrative=narrative)
