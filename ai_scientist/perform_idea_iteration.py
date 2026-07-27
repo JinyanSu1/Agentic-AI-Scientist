@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from ai_scientist.agents_common import (
     ResearchContext,
-    configure_fugu_as_default,
+    configure_model_provider,
     read_paper_in_depth,
     run_agent_with_retry,
     search_literature,
@@ -85,11 +85,11 @@ Then, explicitly:
 def verify_novelty(
     idea: Dict[str, Any], workdir: str, model: str = "fugu", knowledge_bank_dir: str = None
 ) -> NoveltyVerdict:
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
     agent = Agent(
         name="NoveltyVerifier",
         instructions=NOVELTY_CHECK_INSTRUCTIONS,
-        model=model,
+        model=agent_model,
         tools=[search_literature, read_paper_in_depth],
         output_type=NoveltyVerdict,
     )
@@ -105,11 +105,11 @@ def verify_novelty(
 def evaluate_experiment(
     idea: Dict[str, Any], report: ExperimentReport, model: str = "fugu"
 ) -> Verdict:
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
     agent = Agent(
         name="ExperimentEvaluator",
         instructions=EXPERIMENT_EVALUATOR_INSTRUCTIONS,
-        model=model,
+        model=agent_model,
         output_type=Verdict,
     )
     prompt = (
@@ -124,7 +124,7 @@ def evaluate_experiment(
 def revise_idea_from_experiment(
     idea: Dict[str, Any], report: ExperimentReport, verdict: Verdict, model: str = "fugu"
 ) -> Dict[str, Any]:
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
     agent = Agent(
         name="Proposer",
         instructions=PROPOSER_REVISE_INSTRUCTIONS_TEMPLATE.format(
@@ -137,7 +137,7 @@ def revise_idea_from_experiment(
             reasoning=verdict.reasoning,
             unresolved_issues=verdict.unresolved_issues,
         ),
-        model=model,
+        model=agent_model,
         output_type=IdeaDraft,
     )
     result = run_agent_with_retry(agent, "Revise the idea now.", max_turns=3)

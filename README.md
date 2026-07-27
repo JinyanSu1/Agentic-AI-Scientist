@@ -3,7 +3,7 @@
   <p><i>An open-ended, agent-driven automated research loop.</i></p>
 </div>
 
-Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2). It replaces the original best-first tree-search (BFTS) pipeline with a single open-ended **research loop**: an agent proposes ideas through a structured debate, pilots them, verifies novelty, then develops the winner while an evaluator decides after each attempt whether to lock, revise, or abandon it — with no fixed stages or iteration counts baked in. The actual coding and running of experiments is delegated to a pluggable **coding worker** — either [Codex CLI](https://github.com/openai/codex) or the [Claude Code CLI](https://github.com/anthropics/claude-code), selected with `--worker` (see [Coding worker](#coding-worker)). The orchestration layer (ideation, evaluation, the Research Agent's reasoning) is built on the [openai-agents](https://github.com/openai/openai-agents-python) SDK and, as shipped, is wired to the internal Sakana **fugu** gateway (`SAKANA_API_KEY`) — swapping that layer to a different provider requires a small code change in [`ai_scientist/agents_common.py`](ai_scientist/agents_common.py), not just a flag.
+Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2). It replaces the original best-first tree-search (BFTS) pipeline with a single open-ended **research loop**: an agent proposes ideas through a structured debate, pilots them, verifies novelty, then develops the winner while an evaluator decides after each attempt whether to lock, revise, or abandon it — with no fixed stages or iteration counts baked in. The actual coding and running of experiments is delegated to a pluggable **coding worker** — either [Codex CLI](https://github.com/openai/codex) or the [Claude Code CLI](https://github.com/anthropics/claude-code), selected with `--worker` (see [Coding worker](#coding-worker)). The orchestration layer (ideation, evaluation, the Research Agent's reasoning) is built on the [openai-agents](https://github.com/openai/openai-agents-python) SDK and picks its backend from `--model` — the internal Sakana **fugu** gateway by default, or OpenAI/Anthropic/Gemini/Ollama directly (see [Orchestrator model](#orchestrator-model)).
 
 > **⚠️ Caution — this executes LLM-written code.**
 > The research agent delegates to its coding worker running fully unattended — Codex with `--dangerously-bypass-approvals-and-sandbox`, or Claude Code with `--dangerously-skip-permissions` — which will write and run arbitrary code and shell commands in its working directory. Run it only inside an isolated environment (e.g. a dedicated SLURM allocation or container) that you are willing to treat as the security boundary. Use at your own discretion.
@@ -34,8 +34,10 @@ conda activate ai-scientist-v2
 # Python package requirements
 pip install -r requirements.txt
 
-# The agent framework used throughout the loop
-pip install openai-agents
+# The agent framework used throughout the loop. The [litellm] extra is only
+# needed for the Anthropic orchestrator backend (see "Orchestrator model"
+# below); omit it if you're only using fugu/OpenAI/Ollama/Gemini.
+pip install "openai-agents[litellm]"
 ```
 
 You also need:
@@ -56,10 +58,26 @@ All of the `PATH` tools above (coding worker CLI, tectonic, poppler, chktex) mus
 
 Both run fully unattended with approvals/sandboxing bypassed — see the caution above.
 
+### Orchestrator model
+
+`--model` picks the backend for every reasoning role (ideation debate, novelty/experiment evaluators, the Research Agent, writeup) via `configure_model_provider` (`ai_scientist/agents_common.py`). It dispatches on the model name's prefix:
+
+| `--model` prefix | Backend | Env var needed |
+| --- | --- | --- |
+| `fugu` (default) | Internal Sakana gateway | `SAKANA_API_KEY` |
+| `gpt-*`, `o1-*`, `o3-*` | OpenAI API directly | `OPENAI_API_KEY` |
+| `claude-*` | Anthropic API directly (via litellm) | `ANTHROPIC_API_KEY` |
+| `bedrock/anthropic.claude-*`, `vertex_ai/claude-*` | Claude via AWS Bedrock / Vertex AI (via litellm) | Bedrock/Vertex credentials in the environment |
+| `ollama/*` | Local Ollama server | none (`OLLAMA_API_KEY` optional) |
+| `gemini-*` | Gemini's OpenAI-compatible endpoint | `GEMINI_API_KEY` |
+
+`claude-*`/Bedrock/Vertex routes require the `litellm` extra (`pip install "openai-agents[litellm]"`); everything else only needs `openai-agents` itself, since the SDK talks to them natively via an OpenAI-compatible chat-completions endpoint. This is independent of `--worker`/`--codex-profile`, which only pick what executes experiment *code*, not what does the reasoning.
+
 ### Environment variables
 
 ```bash
-export SAKANA_API_KEY="YOUR_FUGU_GATEWAY_KEY"   # required — all models route through the fugu gateway
+# Whichever your --model needs (see "Orchestrator model" above) -- fugu is the default:
+export SAKANA_API_KEY="YOUR_FUGU_GATEWAY_KEY"
 
 # Optional, for literature search:
 export S2_API_KEY="YOUR_S2_KEY"                 # higher-throughput Semantic Scholar (falls back to keyless + rate limits)
@@ -85,7 +103,7 @@ Key flags (defaults in parentheses):
 | `--seed-papers` | Local PDF paths and/or search queries that define the space to propose in. |
 | `--workshop-file` | Optional Markdown topic description (alternative or complement to seed papers). |
 | `--start-idea-file` / `--start-idea-idx` | Skip ideation/pilots and develop an existing idea from a JSON file. |
-| `--model` (`fugu`) | Model used for the orchestrator (ideation/evaluation/Research-Agent reasoning); as shipped this routes through the Sakana fugu gateway regardless of value (see caveat above). |
+| `--model` (`fugu`) | Model used for the orchestrator (ideation/evaluation/Research-Agent reasoning). See [Orchestrator model](#orchestrator-model) for supported prefixes and required env vars. |
 | `--worker` (`codex`) | Which CLI coding agent executes experiment code: `codex` or `claude-code`. See [Coding worker](#coding-worker). |
 | `--codex-profile` (`fugu`) | Codex CLI profile used when `--worker codex`; `""` for Codex's own default profile/login. |
 | `--num-candidates` (`3`) | How many candidate ideas to generate and pilot. |

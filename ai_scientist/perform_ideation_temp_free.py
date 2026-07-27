@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ai_scientist.agents_common import (
     ResearchContext,
-    configure_fugu_as_default,
+    configure_model_provider,
     read_paper_in_depth,
     run_agent_with_retry,
     search_literature,
@@ -235,8 +235,15 @@ def run_debate_for_idea(
     max_debate_rounds: int,
     transcript_dir: str,
     model: str = "fugu",
+    agent_model: Any = None,
     knowledge_bank_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # agent_model is what configure_model_provider(model) returned -- may differ
+    # from the plain `model` string (e.g. a LitellmModel instance for Anthropic).
+    # ResearchContext needs the string (other tools do their own provider dispatch
+    # from it); the debate Agents need agent_model. Defaults to `model` so this
+    # function is still usable standalone without a separate resolution step.
+    agent_model = agent_model if agent_model is not None else model
     os.makedirs(transcript_dir, exist_ok=True)
     research_ctx = ResearchContext(
         workdir=transcript_dir, model=model, knowledge_bank_dir=knowledge_bank_dir
@@ -263,7 +270,7 @@ def run_debate_for_idea(
     round_idx = 0
     for round_idx in range(max_debate_rounds):
         draft, critique, verdict = run_debate_round(
-            topic_framing, seed_papers_section, revision_context, research_ctx, model=model
+            topic_framing, seed_papers_section, revision_context, research_ctx, model=agent_model
         )
         _persist_round(transcript_dir, round_idx, draft, critique, verdict)
         if draft is not None:
@@ -348,7 +355,7 @@ def generate_temp_free_idea(
     model: str = "fugu",
     knowledge_bank_dir: Optional[str] = None,
 ) -> List[Dict]:
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
 
     ideas: List[Dict[str, Any]] = []
     if reload_ideas and osp.exists(idea_fname):
@@ -364,7 +371,7 @@ def generate_temp_free_idea(
 
     seed_queries = seed_papers
     if not seed_queries and workshop_description.strip():
-        seed_queries = derive_seed_queries_from_workshop(model, workshop_description)
+        seed_queries = derive_seed_queries_from_workshop(agent_model, workshop_description)
         if seed_queries:
             print(f"No --seed-papers given; auto-derived survey queries: {seed_queries}")
 
@@ -384,6 +391,7 @@ def generate_temp_free_idea(
                 max_debate_rounds=max_debate_rounds,
                 transcript_dir=transcript_dir,
                 model=model,
+                agent_model=agent_model,
                 knowledge_bank_dir=knowledge_bank_dir,
             )
             ideas.append(idea)

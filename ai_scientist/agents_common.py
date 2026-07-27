@@ -1,8 +1,13 @@
-"""Shared openai-agents (Agent/Runner/handoff) setup for fugu, plus tools wrapping
-our search + knowledge-bank utilities so agents can search/read papers as genuine
+"""Shared openai-agents (Agent/Runner/handoff) setup, plus tools wrapping our
+search + knowledge-bank utilities so agents can search/read papers as genuine
 tool calls (the agent decides when to read something, not a Python pre-fetch step).
 
-Call configure_fugu_as_default() once per process before constructing any Agent.
+Call configure_model_provider(model) before constructing any Agent that will use
+that model, and pass its return value (not the raw model string) as that Agent's
+model=. For OpenAI-Chat-Completions-shaped backends (fugu/Sakana, OpenAI, Ollama,
+Gemini's OpenAI-compatible endpoint) this also has the side effect of pointing the
+SDK's global default client at that backend -- harmless to call repeatedly with
+the same model, but the return value is still what must be passed to Agent(model=).
 """
 
 import json
@@ -33,21 +38,87 @@ from ai_scientist.tools.codex_worker import (
 from ai_scientist.tools.coding_worker import run_coding_task
 
 
-def configure_fugu_as_default(model: str = "fugu") -> None:
-    client = AsyncOpenAI(
-        api_key=os.environ["SAKANA_API_KEY"],
-        base_url="https://api.sakana.ai/v1",
-        # fugu can be slow to respond on very large research-agent contexts; a
-        # short default timeout there causes "Request timed out" -> a full
-        # from-scratch re-run. Give it generous headroom.
-        timeout=600,
-    )
+def configure_model_provider(model: str) -> Any:
+    """Point the openai-agents SDK at the right backend for `model` and return
+    what to pass as that Agent's model=.
+
+    Two shapes of backend exist here:
+    - OpenAI-Chat-Completions-compatible (fugu/Sakana, OpenAI, Ollama, Gemini's
+      OpenAI-compat endpoint): the SDK talks to these natively via a plain model
+      *name* string, so we set them as the SDK's default client and just return
+      the model string unchanged.
+    - Everything else (Anthropic Claude direct/Bedrock/Vertex): a genuinely
+      different API shape the SDK can't reach via set_default_openai_client, so
+      we return a LitellmModel instance (requires `pip install
+      "openai-agents[litellm]"`) instead of a string. Agent(model=...) accepts
+      either a string or a Model instance, so callers just pass through
+      whatever this returns.
+
+    Only the OpenAI-compatible branch's global client configuration is a
+    process-wide side effect; the Anthropic-family branch returns a
+    self-contained object with no shared state, so mixing models across roles
+    in the same process is safe as long as each Agent is built with the value
+    configure_model_provider returned for the model it should use.
+    """
     # Tracing defaults to uploading run traces to OpenAI's platform using
-    # OPENAI_API_KEY, which we don't have a valid one for and don't want anyway
-    # since we're not running against OpenAI's actual models.
-    set_default_openai_client(client, use_for_tracing=False)
+    # OPENAI_API_KEY, which isn't necessarily valid/present for every backend
+    # here and isn't wanted anyway since we're not running against OpenAI's
+    # actual tracing-enabled models. Disabled unconditionally, not just for the
+    # OpenAI-compatible branch below.
     set_tracing_disabled(True)
+
+    if model.startswith("claude-") or (
+        (model.startswith("bedrock/") or model.startswith("vertex_ai/")) and "claude" in model
+    ):
+        try:
+            from agents.extensions.models.litellm_model import LitellmModel
+        except ImportError as e:
+            raise ImportError(
+                "Anthropic models require litellm: pip install \"openai-agents[litellm]\""
+            ) from e
+        if model.startswith("claude-"):
+            # Bare Anthropic model names need litellm's provider prefix; the
+            # bedrock/vertex_ai-prefixed forms already match litellm's own
+            # naming for those routes, so they pass through unchanged.
+            litellm_model_name = f"anthropic/{model}"
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        else:
+            litellm_model_name = model
+            api_key = None  # Bedrock/Vertex auth comes from their own env/credentials
+        return LitellmModel(model=litellm_model_name, api_key=api_key)
+
+    if model.startswith("ollama/"):
+        client = AsyncOpenAI(
+            api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
+            base_url="http://localhost:11434/v1",
+            timeout=600,
+        )
+    elif model.startswith("fugu"):
+        client = AsyncOpenAI(
+            api_key=os.environ["SAKANA_API_KEY"],
+            base_url="https://api.sakana.ai/v1",
+            # fugu can be slow to respond on very large research-agent contexts; a
+            # short default timeout there causes "Request timed out" -> a full
+            # from-scratch re-run. Give it generous headroom.
+            timeout=600,
+        )
+    elif "gemini" in model:
+        client = AsyncOpenAI(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=600,
+        )
+    elif "gpt" in model or "o1" in model or "o3" in model:
+        client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=600)
+    else:
+        raise ValueError(
+            f"Model {model!r} isn't supported by the openai-agents orchestrator. "
+            "Add a branch in configure_model_provider (ai_scientist/agents_common.py) "
+            "for it."
+        )
+    set_default_openai_client(client, use_for_tracing=False)
     set_default_openai_api("chat_completions")
+    return model
 
 
 def run_agent_with_retry(

@@ -31,7 +31,7 @@ from agents import Agent
 from pydantic import BaseModel
 
 from ai_scientist import research_wiki
-from ai_scientist.agents_common import configure_fugu_as_default, run_agent_with_retry
+from ai_scientist.agents_common import configure_model_provider, run_agent_with_retry
 from ai_scientist.llm import create_client
 from ai_scientist.perform_idea_iteration import (
     evaluate_experiment,
@@ -73,7 +73,7 @@ class PilotRanking(BaseModel):
 def rank_pilots(
     ideas: List[Dict[str, Any]], reports: List[ExperimentReport], model: str = "fugu"
 ) -> PilotRanking:
-    configure_fugu_as_default(model)
+    agent_model = configure_model_provider(model)
     agent = Agent(
         name="PilotRanker",
         instructions=(
@@ -83,7 +83,7 @@ def rank_pilots(
             "well-supported signal (positive or a clean negative result) over "
             "ones that are inconclusive, buggy, or barely implemented."
         ),
-        model=model,
+        model=agent_model,
         output_type=PilotRanking,
     )
     prompt = "\n\n".join(
@@ -444,7 +444,7 @@ def main():
     )
     args = parser.parse_args()
 
-    configure_fugu_as_default(args.model)
+    configure_model_provider(args.model)
 
     if args.resume_loop_dir:
         loop_dir = args.resume_loop_dir
