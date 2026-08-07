@@ -12,6 +12,18 @@ Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist
 
 [`examples/AddressOnlyKV`](examples/AddressOnlyKV) is one complete, unedited run: a compiled paper, the idea as the ideation debate wrote it, and the pipeline's own review — including that review's `Reject` verdict. We're showing it warts and all on purpose: this pipeline reports negative results and honest self-critique rather than only positive ones, and a real example demonstrates that better than a feature list does.
 
+## What has actually been tested
+
+Being upfront about coverage, because the configuration matrix below is much wider than what we could afford to exercise:
+
+**Every run we have ever done used `--model fugu` with `--worker codex --codex-profile fugu`.** That is the only path with real mileage on it — several multi-day runs, end to end, producing the papers in [`examples/`](examples).
+
+Everything else — `--worker claude-code`, and the `openai-*` / `claude-*` / `gemini-*` / Ollama orchestrator backends — is **implemented and import-clean but has never been run end to end.** We had a single GPU allocation and a fixed compute budget, and we spent it on science rather than on a support matrix.
+
+We expect these paths to be *close* to working rather than broken by design: they are thin adapters over one CLI subprocess call and one SDK client construction, so the likely failure modes are small and local — auth/env wiring, a CLI flag that has since been renamed, or a response shape that needs unwrapping differently — not anything architectural. In other words, if you hit a bug here it should be a short fix, not a rewrite.
+
+**If you do hit one, please open an issue.** We would rather record a known-issue list here than have the next person rediscover the same thing. Confirmed problems and their workarounds will be added to this section so later users can either avoid them or fix them quickly.
+
 ## How it works
 
 The whole loop is orchestrated by [`run_research_loop.py`](run_research_loop.py):
@@ -58,7 +70,7 @@ All of the `PATH` tools above (coding worker CLI, tectonic, poppler, chktex) mus
 `--worker` picks which CLI agent actually writes, runs, and debugs experiment code (`ai_scientist/tools/coding_worker.py`). The Research Agent's reasoning ("what should I try next") stays on the `--model` orchestrator regardless of which worker you pick.
 
 - **`--worker codex` (default)** — shells out to `codex exec --profile <name> --dangerously-bypass-approvals-and-sandbox ...`. `--codex-profile` (default `fugu`) selects the Codex CLI profile; pass `--codex-profile ""` to use Codex's own default profile/login (e.g. a regular OpenAI account) instead of the internal Sakana-routed `fugu` profile.
-- **`--worker claude-code`** — shells out to `claude -p "<task>" --dangerously-skip-permissions --output-format json`. Requires the `claude` CLI on `PATH`, authenticated independently (e.g. `claude auth` or `ANTHROPIC_API_KEY`) of whatever `--model`/`SAKANA_API_KEY` is doing for the orchestrator.
+- **`--worker claude-code`** — shells out to `claude -p "<task>" --dangerously-skip-permissions --output-format json`. Requires the `claude` CLI on `PATH`, authenticated independently (e.g. `claude auth` or `ANTHROPIC_API_KEY`) of whatever `--model`/`SAKANA_API_KEY` is doing for the orchestrator. **Never exercised end to end** — see [What has actually been tested](#what-has-actually-been-tested).
 
 Both run fully unattended with approvals/sandboxing bypassed — see the caution above.
 
@@ -76,6 +88,8 @@ Both run fully unattended with approvals/sandboxing bypassed — see the caution
 | `gemini-*` | Gemini's OpenAI-compatible endpoint | `GEMINI_API_KEY` |
 
 `claude-*`/Bedrock/Vertex routes require the `litellm` extra (`pip install "openai-agents[litellm]"`); everything else only needs `openai-agents` itself, since the SDK talks to them natively via an OpenAI-compatible chat-completions endpoint. This is independent of `--worker`/`--codex-profile`, which only pick what executes experiment *code*, not what does the reasoning.
+
+Only the `fugu` route has been run end to end; the rest of this table is untested — see [What has actually been tested](#what-has-actually-been-tested).
 
 ### Environment variables
 
