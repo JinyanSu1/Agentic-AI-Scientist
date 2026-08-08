@@ -1,0 +1,32 @@
+There is no fixed workshop topic to fit. Propose a novel, high-impact research
+idea in the general area of the seed papers below -- let the papers themselves
+define the space to work in, rather than fitting any external theme.
+
+OPERATIONAL NOTE ON MODEL WEIGHTS (this environment, not a scientific constraint):
+
+The seed papers name models by their official Hugging Face repo IDs, but this
+machine has NO Hugging Face token, so every gated repo returns HTTP 401 and
+cannot be downloaded. Do not plan around a repo you cannot fetch, and do not
+waste time retrying a 401 -- use the ungated mirror instead. These mirrors are
+the same full-precision bf16 weights (verified), not quantized re-releases:
+
+  meta-llama/Llama-3.2-1B-Instruct    -> unsloth/Llama-3.2-1B-Instruct
+  meta-llama/Llama-3.2-3B-Instruct    -> unsloth/Llama-3.2-3B-Instruct
+  meta-llama/Meta-Llama-3-8B-Instruct -> unsloth/llama-3-8b-Instruct
+                                         (or NousResearch/Meta-Llama-3-8B-Instruct)
+  meta-llama/Llama-3.1-8B-Instruct    -> unsloth/Meta-Llama-3.1-8B-Instruct
+  google/gemma-3-1b-it                -> unsloth/gemma-3-1b-it
+  google/gemma-2-9b-it                -> unsloth/gemma-2-9b-it
+
+Ungated and directly downloadable under their official IDs: all Qwen/* (Qwen2.5
+and Qwen3 instruct releases), mistralai/Mistral-7B-Instruct-v0.3,
+allenai/OLMo-2-1124-7B-Instruct, HuggingFaceTB/SmolLM2-*-Instruct, microsoft/phi-4.
+
+Already present in the local HF cache, so they cost no download time at all --
+prefer these when the science does not require a specific other model:
+Qwen2.5-0.5B-Instruct, Qwen2.5-3B-Instruct, Qwen2.5-7B-Instruct,
+Mistral-7B-Instruct-v0.3, OLMo-2-1124-7B-Instruct, SmolLM2-1.7B-Instruct.
+
+Note that gpt2, the pythia checkpoints, Llama-2-*-hf and Mistral-7B-v0.1 are also
+cached but are BASE models: they have no safety alignment and do not refuse
+anything, so they cannot serve as subjects for safety-behaviour experiments.

@@ -38,6 +38,33 @@ We are showing this rather than hiding it. Two things are worth knowing about *w
 
 The reviewer did endorse the substance of the fix, calling the identification argument correct and the design careful, and noted the paper is "unusually honest about limitations, negative results, evaluator sensitivity, and the boundaries of what it can and cannot claim."
 
+## How this run was launched
+
+One command started everything (reconstructed from the run's logs; `--num-candidates 4` matches the four pilot directories the loop created):
+
+```bash
+python run_research_loop.py \
+  --workshop-file run_context.txt \
+  --seed-papers seed_papers/2602.07892v1.pdf \
+                seed_papers/2602.16835v2.pdf \
+                seed_papers/2605.03226v2.pdf \
+                seed_papers/2606.28843v1.pdf \
+  --num-candidates 4
+```
+
+(`--model fugu` with `--worker codex --codex-profile fugu` are the defaults — the only configuration exercised end to end; see the main README.)
+
+The four seed papers are recent safety-fine-tuning work (fetch them from arXiv into `seed_papers/`; they are not committed to this repo):
+
+| arXiv ID | Title |
+|---|---|
+| [2602.07892](https://arxiv.org/abs/2602.07892) | Safety Alignment as Continual Learning: Mitigating the Alignment Tax via Orthogonal Gradient Projection |
+| [2602.16835](https://arxiv.org/abs/2602.16835) | NeST: Neuron Selective Tuning for LLM Safety |
+| [2605.03226](https://arxiv.org/abs/2605.03226) | Self-Mined Hardness for Safety Fine-Tuning |
+| [2606.28843](https://arxiv.org/abs/2606.28843) | The Heterogeneous Safety Impacts of Benign Multilingual Fine-Tuning |
+
+2605.03226 is the seed paper the run's own reviewer later flagged as nonexistent (see above). There was no research topic given: [`run_context.txt`](run_context.txt) (included here verbatim) keeps the "no fixed workshop topic — let the seed papers define the space" framing and otherwise only carries operational notes about the machine it ran on (no Hugging Face token, so use the listed ungated mirrors; which models were already in the local cache). The ideation debate proposed four candidates in the space those papers span, each got a cheap pilot, and the pilot winner (`WrapperOrCore`, revised during development to `WrapperOrContext`) became the idea both papers study. Paper 2 continued the *same* loop directory via `--resume-loop-dir` after the hand edits described above — no new seeds or topic were introduced.
+
 ## Files
 
 Each directory holds `paper.pdf` (compiled, ARR two-column), `review.json` (the pipeline's own review of it), and `idea.md` (the idea as it stood when that paper was written). The PDFs and reviews are exactly as produced; only the idea text differs between the two, in the ways listed above.
