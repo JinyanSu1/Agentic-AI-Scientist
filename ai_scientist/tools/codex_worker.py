@@ -17,6 +17,8 @@ import subprocess
 import time
 from typing import Optional
 
+from ai_scientist.tools.proc_utils import run_in_process_group
+
 
 def run_codex_task(task: str, workdir: str, timeout: int = 3600, profile: Optional[str] = "fugu") -> str:
     """Give Codex a concrete coding/experiment task to carry out in workdir
@@ -36,9 +38,14 @@ def run_codex_task(task: str, workdir: str, timeout: int = 3600, profile: Option
         task,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        returncode, _stdout, stderr = run_in_process_group(cmd, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return f"Codex task timed out after {timeout} seconds without finishing."
+        if osp.exists(last_message_path):
+            os.remove(last_message_path)
+        return (
+            f"Codex task timed out after {timeout} seconds without finishing; its whole "
+            "process tree (including any experiment processes it had started) was killed."
+        )
 
     final_message = "(no final message captured)"
     if osp.exists(last_message_path):
@@ -46,10 +53,10 @@ def run_codex_task(task: str, workdir: str, timeout: int = 3600, profile: Option
             final_message = f.read()
         os.remove(last_message_path)
 
-    if result.returncode != 0:
+    if returncode != 0:
         return (
-            f"Codex exited with code {result.returncode}.\n"
-            f"Stderr tail: {result.stderr[-2000:]}\n"
+            f"Codex exited with code {returncode}.\n"
+            f"Stderr tail: {stderr[-2000:]}\n"
             f"Final message: {final_message}"
         )
     return final_message
@@ -89,18 +96,65 @@ def read_text_file(path: str, max_chars: int = 8000) -> str:
 
 def describe_plot(image_path: str, question: str, model: str = "fugu") -> str:
     """Ask a question about a plot/figure image (e.g. 'does the training loss
-    converge?', 'is there anything unusual in this figure?')."""
+    converge?', 'is there anything unusual in this figure?'). Dispatches to the
+    same backend the orchestrator `model` runs on (mirroring the branches in
+    agents_common.configure_model_provider), instead of assuming Sakana."""
     if not osp.isfile(image_path):
         return f"{image_path} does not exist."
-    import openai
-
-    client = openai.OpenAI(
-        api_key=os.environ["SAKANA_API_KEY"], base_url="https://api.sakana.ai/v1"
-    )
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
+    ext = osp.splitext(image_path)[1].lower().lstrip(".")
+    media_type = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else (ext or 'png')}"
+
+    if model.startswith("claude-"):
+        import anthropic
+
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": media_type, "data": b64},
+                        },
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ],
+        )
+        return response.content[0].text
+
+    import openai
+
+    client_model = model
+    if model.startswith("fugu"):
+        client = openai.OpenAI(
+            api_key=os.environ["SAKANA_API_KEY"], base_url="https://api.sakana.ai/v1"
+        )
+    elif model.startswith("ollama/"):
+        client = openai.OpenAI(
+            api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
+            base_url="http://localhost:11434/v1",
+        )
+        client_model = model.replace("ollama/", "")
+    elif "gemini" in model:
+        client = openai.OpenAI(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    elif "gpt" in model or "o1" in model or "o3" in model:
+        client = openai.OpenAI()
+    else:
+        return (
+            f"inspect_plot has no vision client configured for backend {model!r}; "
+            "inspect the plot's underlying data/result files instead."
+        )
     response = client.chat.completions.create(
-        model=model,
+        model=client_model,
         messages=[
             {
                 "role": "user",
@@ -108,7 +162,7 @@ def describe_plot(image_path: str, question: str, model: str = "fugu") -> str:
                     {"type": "text", "text": question},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        "image_url": {"url": f"data:{media_type};base64,{b64}"},
                     },
                 ],
             }

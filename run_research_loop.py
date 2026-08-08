@@ -94,8 +94,65 @@ def rank_pilots(
         f"Key results: {report.key_results}"
         for i, (idea, report) in enumerate(zip(ideas, reports))
     )
-    result = run_agent_with_retry(agent, prompt, max_turns=3)
-    return result.final_output
+    for _ in range(2):
+        ranking = run_agent_with_retry(agent, prompt, max_turns=3).final_output
+        if 0 <= ranking.winner_index < len(ideas):
+            return ranking
+        print(
+            f"PilotRanker returned out-of-range winner_index {ranking.winner_index} "
+            f"(there are {len(ideas)} pilots); retrying."
+        )
+    # Repeatedly nonsensical index: fall back to the first pilot that at least
+    # completed rather than crashing the whole run on an IndexError downstream.
+    fallback = next((i for i, r in enumerate(reports) if r.status == "completed"), 0)
+    return PilotRanking(
+        winner_index=fallback,
+        reasoning="PilotRanker repeatedly returned an out-of-range winner_index; "
+        f"fell back to the first pilot with status 'completed' (index {fallback}).",
+    )
+
+
+LOOP_STATE_FILENAME = "loop_state.json"
+
+
+def save_loop_state(
+    loop_dir: str, exp_workdir: str, full_dev_rounds: int, pending_deepen: bool
+) -> None:
+    """Persist the development-loop state that CANNOT be reconstructed from the
+    round_XX_outcome.json files alone, so --resume-loop-dir (a) continues in the
+    real experiment workdir -- which may be a reused pilot dir, or named after an
+    idea Name that a later revision changed -- instead of guessing (and getting)
+    a fresh empty directory, and (b) honors a not-yet-consumed premature-lock
+    deepening round instead of skipping straight to writeup."""
+    state = {
+        # Stored relative to loop_dir so the state survives a cwd change between
+        # the original run and the resume (loop paths here are cwd-relative).
+        "exp_workdir_rel": osp.relpath(exp_workdir, loop_dir),
+        "full_dev_rounds": full_dev_rounds,
+        "pending_deepen": pending_deepen,
+    }
+    with open(osp.join(loop_dir, LOOP_STATE_FILENAME), "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def load_loop_state(loop_dir: str) -> Optional[Dict[str, Any]]:
+    """The saved state, or None for loops from before state saving existed (the
+    callers then fall back to the old reconstruct-by-convention guesses)."""
+    path = osp.join(loop_dir, LOOP_STATE_FILENAME)
+    if not osp.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def stored_exp_workdir(loop_dir: str) -> Optional[str]:
+    state = load_loop_state(loop_dir)
+    if not state or not state.get("exp_workdir_rel"):
+        return None
+    return osp.join(loop_dir, state["exp_workdir_rel"])
 
 
 def load_latest_round_report(loop_dir: str) -> tuple[Optional[ExperimentReport], Optional[str]]:
@@ -116,8 +173,9 @@ def load_latest_round_report(loop_dir: str) -> tuple[Optional[ExperimentReport],
     except Exception:
         return None, None
     idea_name = payload.get("idea", {}).get("Name", "idea")
-    round_idx = int(outcomes[-1].split("_")[1])
-    workdir = osp.join(loop_dir, f"round_{round_idx:02d}_{idea_name}")
+    workdir = stored_exp_workdir(loop_dir)
+    if not workdir or not osp.isdir(workdir):
+        workdir = osp.join(loop_dir, f"experiment_{idea_name}")
     return report, (workdir if osp.isdir(workdir) else loop_dir)
 
 
@@ -162,26 +220,38 @@ def run_development_loop(
     have_report_for_round0: bool = False,
     current_workdir: Optional[str] = None,
     latest_report: Optional[ExperimentReport] = None,
+    exp_workdir: Optional[str] = None,
+    full_dev_rounds: int = 0,
+    pending_deepen: bool = False,
 ) -> None:
     """The idea<->experiment development loop (no fixed iteration count -- an
     Evaluator decides lock/revise/abandon after each attempt), followed by the
     writeup handoff on lock. Shared between a fresh run and --resume-loop-dir
-    so the two paths can't drift out of sync."""
+    so the two paths can't drift out of sync. exp_workdir / full_dev_rounds /
+    pending_deepen come from loop_state.json on a resume (see save_loop_state);
+    a fresh run leaves them at their defaults."""
     kb_dir = osp.join(loop_dir, "knowledge_bank")
     # One persistent experiment workdir for the whole development of this idea, so
     # code/data/results built in one round physically survive into the next round
     # (only a distilled handoff -- not the full transcript -- is replayed into the
     # prompt). If we're continuing from a pilot winner, keep working in its dir so
     # the pilot's assets carry forward too.
-    if have_report_for_round0 and current_workdir:
-        exp_workdir = current_workdir
-    else:
-        exp_workdir = osp.join(loop_dir, f"experiment_{idea.get('Name', 'idea')}")
+    if exp_workdir is None:
+        if have_report_for_round0 and current_workdir:
+            exp_workdir = current_workdir
+        else:
+            exp_workdir = osp.join(loop_dir, f"experiment_{idea.get('Name', 'idea')}")
     decision = None
     workdir, report = current_workdir, latest_report
     prev_report = latest_report if have_report_for_round0 else None
-    full_dev_rounds = 0  # rounds where the agent actually ran (pilot reuse doesn't count)
-    pending_deepen = False  # force the next round to deepen after a too-early lock
+    if prev_report is None and start_round > 0:
+        # Resuming past recorded rounds: rebuild the handoff headline from the
+        # last round_XX_outcome.json, so the agent is told where the prior work
+        # left off instead of being kicked off cold in a dirty workdir.
+        prev_report, _ = load_latest_round_report(loop_dir)
+    # full_dev_rounds: rounds where the agent actually ran (pilot reuse doesn't count).
+    # pending_deepen: force the next round to deepen after a too-early lock.
+    save_loop_state(loop_dir, exp_workdir, full_dev_rounds, pending_deepen)
     for round_idx in range(start_round, args.max_safety_rounds):
         with open(osp.join(loop_dir, "current_idea.json"), "w") as f:
             json.dump(idea, f, indent=2)
@@ -216,6 +286,9 @@ def run_development_loop(
                 f,
                 indent=2,
             )
+        # Snapshot the state a resume from after this outcome would need. If the
+        # lock-but-too-shallow branch below flips pending_deepen, it re-saves.
+        save_loop_state(loop_dir, exp_workdir, full_dev_rounds, pending_deepen=False)
 
         prev_report = report
         if verdict.decision == "lock":
@@ -229,6 +302,7 @@ def run_development_loop(
                     "to deepen the study before writing up."
                 )
                 pending_deepen = True
+                save_loop_state(loop_dir, exp_workdir, full_dev_rounds, pending_deepen=True)
                 continue
             research_wiki.add_entry(idea, "locked", verdict.reasoning, args.wiki_path)
             decision = "lock"
@@ -469,6 +543,9 @@ def main():
             )
             return
 
+        state = load_loop_state(loop_dir) or {}
+        exp_workdir = stored_exp_workdir(loop_dir)
+        pending_deepen = bool(state.get("pending_deepen", False))
         outcome_files = sorted(
             f for f in os.listdir(loop_dir)
             if f.startswith("round_") and f.endswith("_outcome.json")
@@ -484,26 +561,40 @@ def main():
                     "resume (start a fresh idea/loop instead)."
                 )
                 return
-            if last_decision == "lock":
-                # NOTE: this assumes the recorded lock was a real break, not a
-                # pending-deepen continue (evaluator locked before
-                # --min-dev-rounds was met, forcing another round without
-                # revising the idea) -- pending_deepen isn't persisted across
-                # resumes, so an interruption inside that specific extra round
-                # would incorrectly skip straight to writeup here instead of
-                # deepening further. Only possible with --min-dev-rounds > 1.
+            if last_decision == "lock" and pending_deepen:
+                # The recorded lock was a PREMATURE one: the evaluator locked
+                # before --min-dev-rounds full rounds had run, so the loop was
+                # interrupted inside the forced deepening round. Continue
+                # developing (the DEEPEN directive fires again) instead of
+                # skipping to writeup on pilot-level evidence.
+                print(
+                    f"{loop_dir}'s last recorded round locked prematurely (a "
+                    "deepening round was still pending); resuming development "
+                    "instead of writing up."
+                )
+            elif last_decision == "lock":
                 print(
                     f"{loop_dir}'s last recorded round already locked; skipping "
                     "straight to writeup instead of starting another development round."
                 )
                 report = ExperimentReport(**last_outcome["report"])
-                workdir = osp.join(loop_dir, f"experiment_{idea.get('Name', 'idea')}")
+                workdir = exp_workdir if exp_workdir and osp.isdir(exp_workdir) else osp.join(
+                    loop_dir, f"experiment_{idea.get('Name', 'idea')}"
+                )
                 idea_dir = run_writeup(idea, report, workdir, loop_dir, args, decision="lock")
                 print(f"Done. Final results in {idea_dir}")
                 return
 
         print(f"Resuming {loop_dir} from round {start_round} with idea '{idea.get('Name')}'")
-        run_development_loop(idea, loop_dir, args, start_round=start_round)
+        run_development_loop(
+            idea,
+            loop_dir,
+            args,
+            start_round=start_round,
+            exp_workdir=exp_workdir,
+            full_dev_rounds=int(state.get("full_dev_rounds", 0)),
+            pending_deepen=pending_deepen,
+        )
         return
 
     if not args.workshop_file and not args.seed_papers and not args.start_idea_file:
@@ -547,7 +638,18 @@ def main():
                 model=args.model,
                 knowledge_bank_dir=kb_dir,
             )
+            if len(ideas) <= len(candidates):
+                # generate_temp_free_idea swallows a failed debate and returns the
+                # unchanged list; blindly appending ideas[-1] here would re-append
+                # the PREVIOUS candidate (piloting the same idea twice) or crash
+                # on an empty list.
+                print(f"Candidate {i} generation produced no new idea; skipping it.")
+                continue
             candidates.append(ideas[-1])
+        if not candidates:
+            raise RuntimeError(
+                f"All {args.num_candidates} candidate generations failed; nothing to pilot."
+            )
 
     if len(candidates) > 1:
         print("\nRunning cheap pilots on all candidates...")

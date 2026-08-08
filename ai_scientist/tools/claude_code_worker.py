@@ -15,6 +15,8 @@ import os
 import subprocess
 from typing import Optional
 
+from ai_scientist.tools.proc_utils import run_in_process_group
+
 
 def run_claude_code_task(task: str, workdir: str, timeout: int = 3600, profile: Optional[str] = None) -> str:
     """Give Claude Code a concrete coding/experiment task to carry out in
@@ -31,11 +33,14 @@ def run_claude_code_task(task: str, workdir: str, timeout: int = 3600, profile: 
         "--output-format", "json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=workdir)
+        returncode, stdout, stderr = run_in_process_group(cmd, timeout=timeout, cwd=workdir)
     except subprocess.TimeoutExpired:
-        return f"Claude Code task timed out after {timeout} seconds without finishing."
+        return (
+            f"Claude Code task timed out after {timeout} seconds without finishing; its "
+            "whole process tree (including any experiment processes it had started) was killed."
+        )
 
-    stdout = result.stdout.strip()
+    stdout = stdout.strip()
     payload = None
     if stdout:
         try:
@@ -47,14 +52,14 @@ def run_claude_code_task(task: str, workdir: str, timeout: int = 3600, profile: 
         if payload.get("is_error"):
             return (
                 f"Claude Code reported an error: {payload.get('result', '(no message)')}\n"
-                f"Stderr tail: {result.stderr[-2000:]}"
+                f"Stderr tail: {stderr[-2000:]}"
             )
         return payload.get("result") or "(no final message captured)"
 
-    if result.returncode != 0:
+    if returncode != 0:
         return (
-            f"Claude Code exited with code {result.returncode}.\n"
-            f"Stderr tail: {result.stderr[-2000:]}\n"
+            f"Claude Code exited with code {returncode}.\n"
+            f"Stderr tail: {stderr[-2000:]}\n"
             f"Stdout tail: {stdout[-2000:]}"
         )
     return stdout or "(no final message captured)"
