@@ -26,16 +26,35 @@ def add_entry(idea: Dict[str, Any], outcome: str, reason: str, wiki_path: str = 
         "outcome": outcome,
         "reason": reason,
     }
+    # If a previous append was torn mid-line (crash/interleaving), start on a
+    # fresh line so only the torn line is lost, not this entry glued onto it.
+    prefix = ""
+    if osp.exists(wiki_path) and osp.getsize(wiki_path) > 0:
+        with open(wiki_path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                prefix = "\n"
     with open(wiki_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+        f.write(prefix + json.dumps(entry) + "\n")
 
 
 def load_entries(wiki_path: str = DEFAULT_WIKI_PATH, max_entries: int = 30) -> List[Dict[str, Any]]:
     if not osp.exists(wiki_path):
         return []
+    entries = []
     with open(wiki_path, "r") as f:
-        lines = [json.loads(line) for line in f if line.strip()]
-    return lines[-max_entries:]
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                # A torn/corrupted line (a crash mid-append, or two concurrent
+                # runs' appends interleaving) must not brick ideation for every
+                # future run; skip it and keep the rest of the wiki usable.
+                continue
+    return entries[-max_entries:]
 
 
 def format_wiki_section(wiki_path: str = DEFAULT_WIKI_PATH, max_entries: int = 30) -> str:
