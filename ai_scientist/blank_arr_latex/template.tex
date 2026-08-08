@@ -19,6 +19,21 @@
 \usepackage[capitalize,noabbrev]{cleveref}
 \usepackage{xspace}
 
+% Packages the writeup agent reaches for often enough that leaving them out
+% costs whole compile attempts: a single undefined control sequence aborts
+% tectonic and the attempt is retried from scratch. None of these clash with
+% acl.sty (which loads only geometry, caption, natbib and hyperref), and all
+% are additive -- loading them cannot break a document that never uses them.
+\usepackage{xcolor}          % \textcolor, \definecolor (also backs colortbl)
+\usepackage{colortbl}        % \rowcolor, \cellcolor
+\usepackage{array}           % extended column specifiers
+\usepackage{tabularx}        % width-aware tables
+\usepackage{makecell}        % \makecell, \thead in table headers
+\usepackage{threeparttable}  % table notes under a tabular
+\usepackage{adjustbox}       % \adjustbox for oversized tables/figures
+\usepackage{siunitx}         % \num, \si, \SI in numeric-heavy results tables
+\usepackage{bm}              % \bm for bold math
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % THEOREMS
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
