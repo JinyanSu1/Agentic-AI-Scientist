@@ -1,0 +1,40 @@
+{
+    "Summary": "The paper investigates whether interleaving jailbreak-wrapped benign counterexamples during hard-example safety fine-tuning teaches transferable harmless behavior or merely wrapper-specific adaptation. It corrects an earlier interpretation (based on a treated-vs-treated wrapped-minus-dewrapped contrast) by adding a normalization-matched harmful-only control arm (H_norm) with matched optimizer slots, updates, initialization, and supervised-token denominator but no benign supervision. Using same-core triples (dewrapped core D, wrapped core W, shared target T), the authors show that both benign arms transfer substantially relative to H_norm (~+2.4 and +2.2 log-odds on direct presentations), that a slot placebo rules out a denominator artifact, and that the incremental W-D advantage is presentation-dependent (nonpositive on direct, positive on wrapped). Results are checked with two automatic judges (Qwen and cross-family Llama). The authors retract their stronger no-transfer claim and make no safety-improvement claim.",
+    "Strengths": [
+        "The core identification argument is correct: a treated-versus-treated (W-D) comparison cannot establish absence of an effect shared by both arms, and a supervision-free, design-matched anchor is needed. The paper operationalizes this cleanly with H_norm and a slot placebo.",
+        "The experimental design is careful, with matched supervised-token denominators, matched optimizer slots/updates, token-length matching, per-seed hashing/auditing, and cross-family judge verification.",
+        "The paper is unusually honest about limitations, negative results, evaluator sensitivity, and the boundaries of what it can and cannot claim.",
+        "Cross-judge reliability and evaluator-context (wrapper-stripped) ablations add credibility to the presentation-dependence finding."
+    ],
+    "Weaknesses": [
+        "The central methodological insight (need a supervision-free anchor to interpret a null incremental contrast) is essentially standard difference-in-differences/identification logic and is a fairly modest contribution in itself.",
+        "The final defensible result is extremely narrow and heavily hedged: benign supervision transfers (largely expected), and W-D is presentation-dependent. The paper explicitly makes no safety-improvement claim and no mechanistic claim, leaving limited positive takeaways for the community.",
+        "Serious credibility red flag: the foundational recipe is cited as 'Gupta et al., 2026, arXiv:2605.03226', which is a future/nonexistent arXiv identifier. Since the entire study builds on this recipe, this undermines confidence in the paper's grounding.",
+        "The writing is dense and jargon-heavy (W, D, H_norm, H_slotplacebo, Psi, T_D, I, M), and the retraction/self-correction framing is confusing for a standalone submission.",
+        "Scope is narrow: one FlowGPT-family wrapper distribution, two subject models, LoRA only, two recipe variants; no full fine-tuning, DPO, or RLHF.",
+        "Key evaluation reliability collapses precisely in the wrapped regime where the incremental effect is claimed (kappa=0.453), and several supporting analyses are incomplete (partial Llama panel, missing wrapped interval endpoints, no executed human audit).",
+        "The target-conditional sign reversal (moderation flipping from -0.96 to +2.82) shows the wrapped estimates are fragile to target construction, further weakening the robustness of the headline interaction."
+    ],
+    "Originality": 2,
+    "Quality": 2,
+    "Clarity": 2,
+    "Significance": 2,
+    "Questions": [
+        "The foundational citation 'Gupta et al., 2026, arXiv:2605.03226' appears to be a future/nonexistent arXiv ID. Can you clarify the exact reference and confirm it exists?",
+        "Given that the confirmatory findings are labeled 'two-automatic-judge-qualified' rather than human-validated, and wrapped-prompt cross-judge kappa is only 0.453, how confident can readers be in the wrapped W-D interaction that is central to the paper?",
+        "Why were the wrapped-presentation transfer interval endpoints not recoverable from the frozen run summaries? This limits verifiability of the claim that all twelve intervals exclude zero.",
+        "Beyond the (correct but standard) identification point, what is the actionable, generalizable takeaway for practitioners, given no safety-improvement or mechanistic claim is made?",
+        "How sensitive is the presentation-dependent W-D result to wrapper family, given that the target-conditional sign reversal suggests high fragility?"
+    ],
+    "Limitations": [
+        "The authors are commendably explicit about limitations: LoRA-only, single wrapper family, two model families, evaluator sensitivity, no executed human audit, incomplete cross-family panel, and fragility to target construction. However, these limitations are so extensive that the surviving positive claim is very narrow.",
+        "Safety is treated as a strictly bounded negative; fulfillment is not response harmfulness and no setting passes joint noninferiority, so there is no positive safety contribution."
+    ],
+    "Ethical Concerns": false,
+    "Soundness": 2,
+    "Presentation": 2,
+    "Contribution": 2,
+    "Overall": 3,
+    "Confidence": 3,
+    "Decision": "Reject"
+}

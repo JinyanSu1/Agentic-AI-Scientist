@@ -12,6 +12,8 @@ Agentic AI Scientist is a heavily rearchitected fork of [SakanaAI's AI-Scientist
 
 [`examples/AddressOnlyKV`](examples/AddressOnlyKV) is one complete, unedited run: a compiled paper, the idea as the ideation debate wrote it, and the pipeline's own review — including that review's `Reject` verdict. We're showing it warts and all on purpose: this pipeline reports negative results and honest self-critique rather than only positive ones, and a real example demonstrates that better than a feature list does.
 
+[`examples/JailbreakWrapperSupervision`](examples/JailbreakWrapperSupervision) is a second run kept as a **pair** of papers: what the loop produced on its own (it never locked, hit its safety cap, and rejected itself), and what came out after a human relayed the loop's *own* reviewer back into the idea as a required experiment. That added control refuted the first paper's headline conclusion. The second paper is explicitly **not** an autonomous artifact and the example says exactly what was changed by hand — including that the review scores did not improve, and why one of them dropped.
+
 ## What has actually been tested
 
 Being upfront about coverage, because the configuration matrix below is much wider than what we could afford to exercise:
