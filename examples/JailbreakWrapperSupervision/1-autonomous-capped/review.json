@@ -1,0 +1,55 @@
+{
+    "Summary": "The paper studies what is learned when benign supervision is embedded in jailbreak-style wrappers during hard-example safety tuning. It constructs controlled triples consisting of a direct harmless request (D), the same request inside a jailbreak wrapper (W), and a tokenizer-length-matched neutral frame (N\u2032), while holding response targets, harmful training examples, order, initialization, and update count fixed. LoRA experiments are conducted with Qwen2.5-3B and Mistral-7B subject models over multiple seeds. The authors evaluate safe/harmful fulfillment separation under direct and wrapped test presentations using qualified Qwen-7B and Llama-70B automatic judges. They report that W outperforms D primarily on wrapped presentations, with nonpositive W\u2212D effects on direct presentations and positive wrapped-minus-direct moderation. They additionally re-score fixed outputs after hiding wrappers from the judges and evaluate two held-out wrapper families. The paper concludes that the intervention yields test-presentation-dependent behavior rather than demonstrated transferable harmless-intent learning or improved safety.",
+    "Strengths": [
+        "The same-core, same-target construction is a meaningful methodological improvement over comparisons that simultaneously change prompt source, request, response target, ordering, and length.",
+        "Holding harmful examples, supervised target tokens, initialization, update positions, and update count fixed gives the W\u2212D training-arm comparison relatively strong internal validity.",
+        "The use of multiple subject-model families, multiple training recipes, and many paired seeds is substantially stronger than a single-run case study.",
+        "The evaluator-context ablation directly addresses an important rival explanation: an automatic judge may itself react to jailbreak text. Re-scoring identical stored responses is a sensible controlled diagnostic.",
+        "Held-out wrapper-family evaluation, leave-one-category-out checks, pairing diagnostics, and preservation of prediction hashes are useful robustness and reproducibility practices.",
+        "The authors are appropriately candid that the study does not demonstrate improved safety, that the neutral control is imperfect, that wrapped-prompt judge agreement is weak, and that independent cross-family corroboration is underpowered."
+    ],
+    "Weaknesses": [
+        "The main contrast does not establish absence of transfer. Direct W\u2212D compares wrapped supervision against a D arm that receives direct benign supervision. If both D and W improve direct behavior equally relative to the base model, W\u2212D equals zero even though W has transferred completely. Even a negative W\u2212D value can coexist with substantial W-versus-base transfer. Thus, positive moderation supports a presentation-dependent relative advantage, but not the stronger claim of 'surface form, not intent.' Arm-level movement relative to the base is required.",
+        "The intent and surface-form hypotheses are not mutually exclusive. A model can learn some frame-independent information while also benefiting more strongly under a matched wrapper. The behavioral interaction does not identify what internal representation was learned.",
+        "Because W versus N\u2032 is heterogeneous and treated as exploratory, the experiments do not distinguish jailbreak-specific cue learning from generic extra-context effects, discourse effects, or ordinary train-test format matching. The strongest supported claim is broader presentation dependence.",
+        "The paper omits the arm-level safe and harmful fulfillment rates, their movement from the base model, and most per-recipe results. A separation contrast can improve through very different behavioral changes, including changes that are undesirable for helpfulness or safety. This is particularly important because harmful-fulfillment effects reverse sign across judges and no setting passes the stated joint noninferiority criterion.",
+        "The central measurement relies entirely on automatic judges despite wrapped-prompt agreement of only kappa=0.453. A 58-case qualification set with a 0.90 threshold is too small to establish validity on adversarially framed outputs. The wrapper-stripping ablation rules out direct wrapper exposure as the sole explanation, but stripping context can itself change the judgment task and does not substitute for blinded human evaluation.",
+        "Statistical reporting is incomplete. The Qwen direct estimate is not given, and several primary Qwen estimates have no confidence interval or p-value. The paper claims consistency across the primary Qwen, alternative Qwen, and Mistral recipes without presenting setting-level tables. This makes the claimed replication and backbone criterion difficult to verify.",
+        "The evaluator-context ablation uses pair-cluster resampling only. Pairing shown and stripped scores removes within-response variation, but responses are still clustered by training seed. If the estimand generalizes over training randomness, paired crossed seed-and-pair resampling appears necessary.",
+        "The definition of the main estimand is not reproducible from the manuscript as supplied: the equations defining movement and category-macro separation are missing. Some appendix tables are also malformed, and effects larger than one cannot be interpreted confidently without the complete formula and scaling.",
+        "Important construction and training details are deferred to future serialized artifacts rather than stated in the paper, including optimizer settings, LoRA rank, learning rates, decoding parameters, wrapper assignment, neutral-frame construction, target-audit procedure, and exact train/evaluation splits. The current manuscript is therefore not independently reproducible.",
+        "The title and several statements overstate the result. The evidence can show that the incremental advantage of W over D is presentation-dependent, but it does not establish that the model learned surface form instead of intent."
+    ],
+    "Originality": 3,
+    "Quality": 2,
+    "Clarity": 2,
+    "Significance": 2,
+    "Questions": [
+        "Please report \u03a8 for the base, D, W, and N\u2032 arms separately on direct and wrapped presentations, including safe-fulfillment and harmful-fulfillment components. In particular, what is W versus the untuned base on direct held-out cores?",
+        "Why should transferable intent imply W>D on direct evaluation when D is explicitly trained on direct benign examples? How would the proposed test distinguish no transfer from complete transfer that merely reaches parity with D?",
+        "Can the central conclusion be narrowed to 'the relative W-versus-D advantage is presentation-dependent' unless absolute W-versus-base transfer is shown?",
+        "Please provide exact direct, wrapped, and moderation estimates with confidence intervals and corrected p-values for every subject recipe and both judges. What is the omitted Qwen direct estimate?",
+        "How are the pooled Llama estimates constructed across models, recipes, sources, and categories? Which source panels enter the pooled direct effect, and what multiplicity family was specified?",
+        "Please repeat the evaluator-context inference using a paired crossed seed-and-pair cluster bootstrap, or justify formally why training seeds can be treated as fixed in that analysis.",
+        "Can the authors add a blinded human audit focused on cases where the two judges disagree, with sufficient sampling to estimate both the W\u2212D contrast and moderation? How were the 58 qualification cases labeled and selected?",
+        "When the wrapper is stripped from judge input, do any stored responses contain wrapper-dependent references, role-play continuations, or formatting whose meaning changes without the original context? How often does this occur?",
+        "Can additional controls separate jailbreak semantics from generic context and format matching, for example multiple semantically diverse neutral frames, non-jailbreak adversarial-looking frames, and wrapper families crossed between training and testing?",
+        "Were training cores disjoint from all evaluation cores and benchmarks? Please describe deduplication and contamination checks, target creation and auditing, and wrapper assignment.",
+        "Please restore the missing estimand equations and provide all training, LoRA, optimizer, decoding, and data-construction settings in the manuscript or an accessible anonymous artifact."
+    ],
+    "Limitations": [
+        "The study does not include human evaluation, and automatic-judge disagreement is substantial on the exact wrapped condition central to the claim.",
+        "The experiments cover only LoRA adaptation of two relatively small subject-model families; they do not establish generalization to full fine-tuning, preference optimization, larger models, multilingual settings, or broader wrapper distributions.",
+        "The failed neutral control means jailbreak-specific semantics are not isolated from added context, discourse structure, or train-test format matching.",
+        "The behavioral experiment cannot determine whether internal intent representations, wrapper-sensitive features, or both are learned.",
+        "The direct anchor remains statistically compatible with a small positive transfer effect, while the absolute W-versus-base direct effect is not reported.",
+        "The paper appropriately avoids claiming a safety improvement, but releasing jailbreak templates, trained adapters, and detailed failure analyses has some dual-use risk. The release plan should discuss staged access or redaction for artifacts that materially facilitate attacks, while preserving benign triples and aggregate analysis for reproducibility."
+    ],
+    "Ethical Concerns": false,
+    "Soundness": 2,
+    "Presentation": 2,
+    "Contribution": 2,
+    "Overall": 3,
+    "Confidence": 4,
+    "Decision": "Reject"
+}
