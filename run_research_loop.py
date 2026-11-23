@@ -716,6 +716,15 @@ def main():
             model=args.model,
             knowledge_bank_dir=kb_dir,
         )
+        if not fresh_ideas:
+            # generate_temp_free_idea swallows a failed debate and returns an
+            # empty list here (reload_ideas=False), so fresh_ideas[-1] would
+            # crash the run with an IndexError.
+            print(
+                "Generating a replacement idea failed; stopping without proceeding "
+                "to development."
+            )
+            return
         idea = fresh_ideas[-1]
         # Pilot the replacement too, so it enters development vetted by real
         # empirical signal like the original pilot winner -- rather than skipping
